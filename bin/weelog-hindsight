@@ -1,0 +1,2159 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["textual>=0.80", "rich>=13"]
+# ///
+"""TUI search over a weechat logs directory.
+
+Handles both layouts described in the WeeChat Buffer logging section
+(https://weechat.org/files/doc/stable/weechat_user.en.html#buffer_logging):
+the flat legacy `$plugin.$name.weechatlog[.N][.gz]` and the dated
+`YYYY/<network>/<buffer>.MM-DD.log` hierarchy. Each log line is TSV:
+`YYYY-MM-DD HH:MM:SS \\t <nick-or-event-prefix> \\t <message>`.
+
+Search is ripgrep. The tool indexes file paths once (cached under
+`$XDG_CACHE_HOME/weelog-hindsight/`) and hands rg an explicit path list
+per query so scoped searches touch only the relevant files.
+
+The script is gated such that it can never alter or write to the
+user-supplied --logs directory, only XDG cache.
+
+Usage: weelog-hindsight --logs ~/.local/share/weechat/logs
+       WEELOG_DIR=~/.local/share/weechat/logs weelog-hindsight
+Requires: ripgrep on $PATH; Python 3.12+; textual + rich (via the PEP
+723 shebang under `uv`, or a manual venv).
+"""
+from __future__ import annotations
+
+# Deliberate pylint disables for a single-file TUI script: short locals,
+# self-describing helpers, long CSS/help literals, wide TUI class surface.
+# pylint: disable=C0103,C0114,C0115,C0116,C0301,R0902,R0903,R0912,R0913,R0914,R0917
+
+import argparse
+import asyncio
+import csv
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import zlib
+from dataclasses import dataclass, field, asdict
+from datetime import date, datetime
+from pathlib import Path
+
+from rich.table import Table
+from rich.text import Text
+from textual import on, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.command import Hit, Provider
+from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
+from textual.screen import ModalScreen
+from textual.validation import Function as ValidateFunc
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    RichLog,
+    Static,
+    Tree,
+)
+from textual.worker import Worker, WorkerState
+
+
+# ---------- terminal-friendly rendering helpers ----------
+
+# 16 distinct 256-colour palette entries, skipping red/white/black tones so
+# nicks don't collide with error colours or the default foreground.
+_NICK_PALETTE = (
+    39, 45, 51, 75, 81, 111, 117, 147, 153, 183, 189, 215, 221, 222, 228, 229,
+)
+
+
+def nick_color(nick: str) -> str:
+    if not nick:
+        return "white"
+    # Stable hash across runs; Python's hash() is randomised per interpreter.
+    h = zlib.crc32(nick.encode("utf-8"))
+    return f"color({_NICK_PALETTE[h % len(_NICK_PALETTE)]})"
+
+
+_URL_RE = re.compile(r"https?://[^\s<>\"'`()\[\]{}]+")
+
+
+def terminal_autolinks_urls() -> bool:
+    """True if the current terminal auto-detects URLs without OSC 8 help.
+
+    Kitty (detect_urls defaults to yes), WezTerm (hyperlink_rules default),
+    iTerm2, Ghostty, foot, and gnome-terminal all auto-linkify. We skip
+    emitting OSC 8 in those so we don't paint links on top of links.
+    """
+    term = os.environ.get("TERM", "")
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    # Kitty sets TERM=xterm-kitty and KITTY_WINDOW_ID
+    if term == "xterm-kitty" or os.environ.get("KITTY_WINDOW_ID"):
+        return True
+    if term_program in {"wezterm", "iterm.app", "ghostty"}:
+        return True
+    if os.environ.get("WEZTERM_EXECUTABLE") or os.environ.get("GHOSTTY_RESOURCES_DIR"):
+        return True
+    if os.environ.get("VTE_VERSION"):  # gnome-terminal, tilix, xfce4-terminal, …
+        return True
+    return "foot" in term
+
+
+def render_message(msg: str, use_osc8: bool) -> Text:
+    """Return a Rich Text for a message, optionally linkifying URLs."""
+    if not use_osc8 or "http" not in msg:
+        return Text(msg)
+    out = Text()
+    idx = 0
+    for m in _URL_RE.finditer(msg):
+        if m.start() > idx:
+            out.append(msg[idx:m.start()])
+        url = m.group(0)
+        out.append(url, style=f"link {url}")
+        idx = m.end()
+    if idx < len(msg):
+        out.append(msg[idx:])
+    return out
+
+
+# WeeChat colour escapes. 0x19 introduces a colour/attribute sequence
+# whose argument grammar depends on the next byte; the alternatives
+# below cover the well-defined forms (basic NN, foreground FNN,
+# background BNN, combined *NNNN, terminal-256 @NNNNN, 24-bit !NNNNNN).
+# 0x1A / 0x1B / 0x1C are single attribute bytes with no arguments. If
+# 0x19 isn't followed by a recognised pattern, just the intro byte is
+# stripped to stay conservative around visible text.
+#
+# Branch ordering is load-bearing — the longer 24-bit and combined-*
+# forms must sit before the shorter ones so they consume their full
+# argument byte run. tests/test_logger_options.py exercises every
+# branch in `test_strip_weechat_colors_regex`.
+_WEECHAT_COLOR_RE = re.compile(
+    r"\x19(?:"
+    r"[FB]?\d{2}"
+    r"|\*[*!@~/_|]?\d{4,6}"
+    r"|\*[FB]?\d{2}"
+    r"|@\d{5}"
+    r"|![0-9a-fA-F]{6}"
+    r")?"
+    r"|[\x1a\x1b\x1c]"
+)
+
+
+def strip_weechat_colors(text: str) -> str:
+    """Remove WeeChat colour-control escape sequences from a log line."""
+    # Guard must list every intro byte the regex can match, including
+    # \x1b (the bare attribute byte). Missing one silently leaves it in.
+    if not any(b in text for b in "\x19\x1a\x1b\x1c"):
+        return text
+    return _WEECHAT_COLOR_RE.sub("", text)
+
+
+def parse_timestamp(ts: str) -> "datetime | None":
+    """Parse a timestamp from any WeeChat logger.file.time_format the
+    docs ship with: the user-overridable `%Y-%m-%d %H:%M:%S` and the
+    new default `%@%F %T.%fZ` (ISO 8601 with microseconds + Z).
+
+    ISO-Z inputs come back as aware UTC datetimes; classic inputs come
+    back naive. Callers that subtract from `now` must match tzinfo."""
+    if not ts:
+        return None
+    s = ts.strip()
+    # Python 3.11+ fromisoformat accepts T/space, fractional seconds,
+    # and a trailing Z (returning an aware UTC datetime in that case).
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def extract_hms(ts: str) -> str:
+    """Pull `HH:MM:SS` out of any timestamp format we accept."""
+    dt = parse_timestamp(ts)
+    if dt is not None:
+        return dt.strftime("%H:%M:%S")
+    # Best-effort fallback: split on T or space, drop fractional/Z bits.
+    return ts.replace("T", " ").split(" ", 1)[-1].split(".")[0]
+
+
+def extract_date(ts: str) -> "date | None":
+    dt = parse_timestamp(ts)
+    return dt.date() if dt is not None else None
+
+
+class _ProcReader(io.TextIOWrapper):
+    # TextIOWrapper that reaps its backing subprocess on close, so
+    # each .zst preview doesn't leave a zombie zstdcat behind.
+    def __init__(self, proc: subprocess.Popen):
+        super().__init__(proc.stdout, encoding="utf-8", errors="replace")
+        self._proc = proc
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._proc.returncode is None:
+                try:
+                    self._proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+                    self._proc.wait()
+            # Surface corrupt .zst files the same way read_context
+            # surfaces gzip.BadGzipFile: callers catch OSError.
+            if self._proc.returncode and self._proc.returncode > 0:
+                raise OSError(
+                    f"zstdcat exited {self._proc.returncode} (corrupt .zst?)"
+                )
+
+
+def open_log(path: str):
+    """Open a log file for reading, transparently handling gzip and
+    zstd rotated files. Returns a text-mode file object. zstd uses
+    the system `zstdcat` (ships with the `zstd` package) so we don't
+    pull in a Python zstd dependency."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    if path.endswith(".zst"):
+        proc = subprocess.Popen(
+            ["zstdcat", path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        return _ProcReader(proc)
+    return open(path, "rt", encoding="utf-8", errors="replace")
+
+
+def read_weechat_nick_wrappers() -> tuple[str, str]:
+    """Look up the user's `logger.file.nick_prefix` and `nick_suffix`
+    from weechat's logger.conf so a wrapper like `<alice>` or `|alice|`
+    is invisible to nick filtering and display. Returns ("", "") if
+    the file isn't found or the keys aren't set."""
+    candidates = [
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "weechat" / "logger.conf",
+        Path.home() / ".weechat" / "logger.conf",
+    ]
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        prefix = ""
+        suffix = ""
+        in_file = False
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_file = (line == "[file]")
+                continue
+            if not in_file:
+                continue
+            for key in ("nick_prefix", "nick_suffix"):
+                if line.startswith(f"{key} ="):
+                    val = line.split("=", 1)[1].strip()
+                    if len(val) >= 2 and val[0] == val[-1] == '"':
+                        val = val[1:-1]
+                    if key == "nick_prefix":
+                        prefix = val
+                    else:
+                        suffix = val
+        return prefix, suffix
+    return "", ""
+
+
+def strip_nick_wrappers(who: str, prefix: str, suffix: str) -> str:
+    """Remove configured nick_prefix/nick_suffix from a parsed `who`."""
+    if prefix and who.startswith(prefix):
+        who = who[len(prefix):]
+    if suffix and who.endswith(suffix):
+        who = who[: -len(suffix)]
+    return who
+
+
+def format_relative(ts: str) -> str:
+    """'2026-03-14 10:22' → '3d' style short relative marker."""
+    when = parse_timestamp(ts)
+    if when is None:
+        return ""
+    # Match tzinfo before subtracting; ISO-Z timestamps are aware UTC,
+    # classic timestamps are naive local. Mismatched arithmetic raises.
+    now = datetime.now(when.tzinfo) if when.tzinfo else datetime.now()
+    delta = now - when
+    days = delta.days
+    if days < 0:
+        return ""
+    if days == 0:
+        h = delta.seconds // 3600
+        return f"{h}h" if h else f"{delta.seconds // 60}m"
+    if days < 30:
+        return f"{days}d"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
+
+
+def _clipboard_too_large(text: str) -> bool:
+    """True if the clipboard payload is likely to be silently truncated
+    by tmux or similarly constrained terminal multiplexers (~74 KB)."""
+    return len(text.encode("utf-8")) > 70_000
+
+
+# ---------- index ----------
+
+# Legacy mask: $plugin.$name.weechatlog (+ optional .N rotation + .gz/.zst).
+LEGACY_RE = re.compile(
+    r"^(?P<plugin>[^.]+)\.(?P<rest>.+)\.weechatlog(?:\.\d+)?"
+    r"(?P<comp>\.gz|\.zst)?$"
+)
+# Dated mask (irc only): `%Y/$server/$channel.%m-%d.log`
+DATED_RE = re.compile(r"^(?P<buf>.+)\.(?P<md>\d{2})-(?P<md2>\d{2})\.log$")
+YEAR_RE = re.compile(r"^\d{4}$")
+
+
+@dataclass(frozen=True)
+class LogFile:
+    path: str
+    network: str
+    buffer: str
+    day: str | None  # YYYY-MM-DD or None for legacy single-file buffers
+    compressed: bool  # True for .gz or .zst rotated siblings
+
+
+# classify_buffer(network, buffer) returns one of:
+#   channel | pm | server | znc | soju | service | monitor | user_core | other
+# See test_classifier.py for the full mapping.
+
+def is_soju_buffer(network: str, buffer: str) -> bool:
+    """Soju bouncers expose a single control buffer named BouncerServ
+    on every bridged network. Weechat's default logger writes this
+    lowercase (logger.file.name_lower_case = on), so the on-disk
+    buffer name is `bouncerserv`. casefold covers users who've flipped
+    the lower-case knob off. Unlike ZNC, soju doesn't use an asterisk
+    prefix/suffix on the control nick."""
+    del network
+    return buffer.casefold() == "bouncerserv"
+
+
+# Atheme / Anope / ircservices-style services bots. These appear as
+# unprefixed query buffers named after the service (weechat lowercases
+# buffer names by default). Matched case-insensitively.
+_SERVICE_NAMES = frozenset({
+    "chanserv", "nickserv", "memoserv", "operserv", "botserv",
+    "hostserv", "helpserv", "global", "authserv", "saslserv",
+    "statserv", "gameserv", "groupserv", "infoserv", "spamserv",
+    "rootserv", "alis",
+})
+
+
+def is_service_buffer(buffer: str) -> bool:
+    return buffer.casefold() in _SERVICE_NAMES
+
+
+def is_znc_buffer(buffer: str) -> bool:
+    # ZNC module buffers can be prefix- OR suffix-asterisk depending
+    # on the bouncer's StatusPrefix setting. Both *status and status*
+    # (and *nickserv / nickserv*, etc.) show up in the wild.
+    return bool(buffer) and (buffer.startswith("*") or buffer.endswith("*"))
+
+
+def classify_buffer(network: str, buffer: str) -> str:
+    if network == "(core)":
+        if buffer in ("chanmon", "highmon", "newsmon"):
+            return "monitor"
+        if buffer == "weechat":
+            return "user_core"
+        return "other"
+    if buffer == "(server)" or buffer == network:
+        return "server"
+    if is_znc_buffer(buffer):
+        return "znc"
+    if is_soju_buffer(network, buffer):
+        return "soju"
+    if is_service_buffer(buffer):
+        return "service"
+    if buffer and buffer[0] in "#&+!":
+        return "channel"
+    return "pm"
+
+
+def build_index(logs_dir: Path) -> list[LogFile]:
+    out: list[LogFile] = []
+    for entry in os.scandir(logs_dir):
+        if entry.is_file():
+            m = LEGACY_RE.match(entry.name)
+            if m:
+                plugin = m["plugin"]
+                rest = m["rest"]
+                if plugin == "irc" and rest.startswith("server."):
+                    # IRC server buffer: irc.server.<network>.weechatlog
+                    network = rest[len("server."):]
+                    buffer = "(server)"
+                elif plugin == "irc" and "." in rest:
+                    network, buffer = rest.split(".", 1)
+                else:
+                    # core.weechat, core.highmon, xfer.foo, etc.: no server.
+                    network = f"({plugin})"
+                    buffer = rest
+                out.append(LogFile(
+                    path=entry.path,
+                    network=network,
+                    buffer=buffer,
+                    day=None,
+                    compressed=bool(m["comp"]),
+                ))
+        elif entry.is_dir() and YEAR_RE.match(entry.name):
+            year = entry.name
+            for net_entry in os.scandir(entry.path):
+                if not net_entry.is_dir():
+                    continue
+                network = net_entry.name
+                for f in os.scandir(net_entry.path):
+                    if not f.is_file():
+                        continue
+                    m = DATED_RE.match(f.name)
+                    if not m:
+                        continue
+                    day = f"{year}-{m['md']}-{m['md2']}"
+                    out.append(LogFile(
+                        path=f.path,
+                        network=network,
+                        buffer=m["buf"],
+                        day=day,
+                        compressed=False,
+                    ))
+    return out
+
+
+def cache_path() -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "weelog-hindsight" / "index.json"
+
+
+# Write allowlist. Set by main(); enforced by assert_writable().
+# Any write outside these roots, or inside --logs, aborts the process.
+_ALLOWED_WRITE_ROOTS: list[Path] = []
+_LOGS_DIR_RESOLVED: Path | None = None
+_EXPORT_NAME_PREFIX = "weelog-hindsight-"
+_EXPORT_SUFFIX = ".tsv"
+
+
+def _set_write_policy(logs_dir: Path, cache_dir: Path, export_dir: Path) -> None:
+    global _LOGS_DIR_RESOLVED
+    _LOGS_DIR_RESOLVED = logs_dir.resolve()
+    _ALLOWED_WRITE_ROOTS.clear()
+    _ALLOWED_WRITE_ROOTS.extend([cache_dir.resolve(), export_dir.resolve()])
+
+
+def _current_allowed_roots() -> list[Path]:
+    """Recomputed on every check so env changes (e.g. test monkeypatching
+    $XDG_CACHE_HOME) don't leave a stale allowlist. Extra roots added by
+    _set_write_policy are preserved."""
+    roots = [cache_path().parent.resolve(), Path("/tmp").resolve()]
+    for r in _ALLOWED_WRITE_ROOTS:
+        if r not in roots:
+            roots.append(r)
+    return roots
+
+
+def open_w(path: Path, **kwargs):
+    """Single chokepoint for filesystem writes: routes the path through
+    the write gate, then opens for writing. Any write that doesn't go
+    through this helper is a smell — grep for `open(..., "w")` and
+    `write_text` at review time."""
+    assert_writable(path)
+    return path.open("w", **kwargs)
+
+
+def assert_writable(path: Path) -> None:
+    """Refuse any write that isn't (a) under an allowlisted root,
+    (b) outside --logs, and (c) for /tmp targets, named with our
+    export prefix + .tsv suffix. Aborts with SystemExit on failure."""
+    resolved = path.resolve()
+    roots = _current_allowed_roots()
+    # (1) allowlist membership
+    ok = False
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            ok = True
+            break
+        except ValueError:
+            continue
+    if not ok:
+        sys.exit(
+            f"error: refused to write {resolved}. Permitted write roots "
+            f"are {[str(r) for r in roots]}. This is a cardinal guard: "
+            "the tool never writes outside its cache or explicit export "
+            "location."
+        )
+    # No overlap with --logs, even when --logs is /tmp.
+    if _LOGS_DIR_RESOLVED is not None:
+        try:
+            resolved.relative_to(_LOGS_DIR_RESOLVED)
+            sys.exit(
+                f"error: refused to write {resolved} because it sits "
+                f"inside --logs ({_LOGS_DIR_RESOLVED}). Logs are "
+                "strictly read-only."
+            )
+        except ValueError:
+            pass
+    # /tmp targets must carry our export prefix/suffix.
+    cache_root = cache_path().parent.resolve()
+    is_cache = False
+    try:
+        resolved.relative_to(cache_root)
+        is_cache = True
+    except ValueError:
+        pass
+    if not is_cache:
+        name = resolved.name
+        if not (name.startswith(_EXPORT_NAME_PREFIX) and name.endswith(_EXPORT_SUFFIX)):
+            sys.exit(
+                f"error: refused to write {resolved}. Export files must "
+                f"be named '{_EXPORT_NAME_PREFIX}*{_EXPORT_SUFFIX}'."
+            )
+
+
+def load_or_build_index(logs_dir: Path) -> tuple[list[LogFile], dict]:
+    start = time.monotonic()
+    key = _index_key(logs_dir)
+    cp = cache_path()
+    cache_hit = False
+    idx: list[LogFile] | None = None
+    if cp.exists():
+        try:
+            data = json.loads(cp.read_text())
+            if data.get("key") == key:
+                idx = [LogFile(**e) for e in data["entries"]]
+                cache_hit = True
+        except (OSError, json.JSONDecodeError, TypeError, KeyError):
+            # Cache is derived state; rebuild on any read failure.
+            idx = None
+    if idx is None:
+        idx = build_index(logs_dir)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        with open_w(cp, encoding="utf-8") as f:
+            json.dump({"key": key, "entries": [asdict(e) for e in idx]}, f)
+    # Aggregate stats in one pass for the onboarding card.
+    total_bytes = 0
+    days: list[str] = []
+    networks: set[str] = set()
+    buffers: set[tuple[str, str]] = set()
+    channels: set[tuple[str, str]] = set()
+    pms: set[tuple[str, str]] = set()
+    kind_counts: dict[str, int] = {}
+    for e in idx:
+        try:
+            total_bytes += os.path.getsize(e.path)
+        except OSError:
+            pass
+        if e.day:
+            days.append(e.day)
+        networks.add(e.network)
+        buffers.add((e.network, e.buffer))
+        kind = classify_buffer(e.network, e.buffer)
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        if kind == "channel":
+            channels.add((e.network, e.buffer))
+        elif kind == "pm":
+            pms.add((e.network, e.buffer))
+    stats = {
+        "total": len(idx),
+        "compressed": sum(1 for e in idx if e.compressed),
+        "legacy": sum(1 for e in idx if e.day is None),
+        "bytes": total_bytes,
+        "networks": len(networks),
+        "buffers": len(buffers),
+        "channels": len(channels),
+        "pms": len(pms),
+        "oldest": min(days) if days else None,
+        "newest": max(days) if days else None,
+        "elapsed_ms": int((time.monotonic() - start) * 1000),
+        "cache_hit": cache_hit,
+        "kinds": kind_counts,
+        "logs_dir": str(logs_dir),
+    }
+    return idx, stats
+
+
+def humanize_bytes(n: int) -> str:
+    # Loop always returns: TB short-circuits the predicate on the
+    # final iteration, so no fallback return is needed.
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        n /= 1024
+    raise AssertionError("unreachable")
+
+
+def _index_key(logs_dir: Path) -> str:
+    """Hash of (logs_dir path, top-level mtimes). Cheap, detects adds/renames."""
+    h = hashlib.sha256()
+    h.update(str(logs_dir.resolve()).encode())
+    for entry in sorted(os.scandir(logs_dir), key=lambda e: e.name):
+        st = entry.stat(follow_symlinks=False)
+        h.update(f"{entry.name}:{st.st_mtime_ns}:{st.st_size}\n".encode())
+        if entry.is_dir() and YEAR_RE.match(entry.name):
+            for sub in sorted(os.scandir(entry.path), key=lambda e: e.name):
+                ss = sub.stat(follow_symlinks=False)
+                h.update(f"  {sub.name}:{ss.st_mtime_ns}:{ss.st_size}\n".encode())
+    return h.hexdigest()
+
+
+# ---------- query ----------
+
+@dataclass
+class Query:
+    text: str = ""
+    regex: bool = False
+    case_sensitive: bool = False
+    networks: set[str] = field(default_factory=set)
+    buffers: set[tuple[str, str]] = field(default_factory=set)
+    date_from: date | None = None
+    date_to: date | None = None
+    nick: str = ""
+    hide_events: bool = True
+    include_compressed: bool = False
+    # "system" covers meta (core, chanmon, highmon), znc (*status),
+    # soju (bouncerserv), and services (ChanServ, NickServ, ...).
+    # One mental bucket: "the housekeeping channels that aren't real
+    # conversation". Tree scoping still lets you pick one kind.
+    include_system: bool = False
+    nick_wrap_prefix: str = ""
+    nick_wrap_suffix: str = ""
+
+
+def select_files(index: list[LogFile], q: Query) -> list[str]:
+    out: list[str] = []
+    for lf in index:
+        if lf.compressed and not q.include_compressed:
+            continue
+        if lf.network.startswith("(") and not q.include_system:
+            continue
+        kind = classify_buffer(lf.network, lf.buffer)
+        if kind in ("znc", "soju", "service") and not q.include_system:
+            continue
+        if q.networks and lf.network not in q.networks:
+            continue
+        if q.buffers and (lf.network, lf.buffer) not in q.buffers:
+            continue
+        if lf.day is not None:
+            d = date.fromisoformat(lf.day)
+            if q.date_from and d < q.date_from:
+                continue
+            if q.date_to and d > q.date_to:
+                continue
+        out.append(lf.path)
+    return out
+
+
+# ---------- ripgrep ----------
+
+EVENT_PREFIXES = {"▬▬▶", "◀▬▬", "-->", "<--", "--"}
+
+
+@dataclass
+class Match:
+    path: str
+    line_no: int
+    timestamp: str
+    who: str       # nick for chat, or prefix glyph ("--", "-->", "▬▬▶") for events
+    message: str
+    is_event: bool
+
+
+def _match_sort_key(m: "Match") -> tuple:
+    """Sort key for result rows. Lexical comparison on raw strings would
+    put ISO-T after classic-space at the same instant; parsing fixes
+    that. tzinfo is dropped so aware (ISO-Z) and naive (classic) rows
+    can be compared in one pass — same-format ordering is exact,
+    mixed-format is approximate (off by the local UTC offset)."""
+    dt = parse_timestamp(m.timestamp) or datetime.min
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return (dt, m.path, m.line_no)
+
+
+def parse_line(raw: str) -> tuple[str, str, str, bool]:
+    """Weechat log lines are TSV with 3 fields: ts, who, message.
+    Malformed lines (no tabs) return the raw text as the message with
+    empty timestamp and nick, so they render as unstructured comments
+    rather than polluting the timestamp column."""
+    parts = raw.rstrip("\n").split("\t", 2)
+    if len(parts) < 2:
+        return "", "", parts[0] if parts else "", False
+    while len(parts) < 3:
+        parts.append("")
+    ts, who, msg = parts
+    return ts, who, msg, who in EVENT_PREFIXES
+
+
+# IRC nicks max out around 30 chars even on permissive networks. Cap
+# user input so the per-nick subsequence regex stays bounded; a 200-
+# char "nick" would otherwise produce 200 `[^\t]*` clauses.
+NICK_INPUT_MAX = 32
+CHUNK = 10000
+
+
+async def run_search(q: Query, paths: list[str]):
+    if not paths:
+        return
+    pattern = q.text
+    args = ["rg", "--json", "-z", "--no-messages", "-C", "0"]
+    if not q.case_sensitive:
+        args.append("-S")
+    # Accept one or more nicks, comma/space separated. Truncate per
+    # nick to bound subseq pattern length.
+    nicks = [
+        n[:NICK_INPUT_MAX]
+        for n in re.split(r"[,\s]+", q.nick.strip())
+        if n
+    ]
+    regex_mode = q.regex or bool(nicks)
+    if nicks:
+        # Per-nick fzf subsequence; tab anchors prevent body-mention leaks.
+        def _subseq(nick: str) -> str:
+            # nick is always non-empty here (the `if n` guard filters
+            # empties before we reach this point).
+            chars = [re.escape(c) for c in nick]
+            return "[^\\t]*" + "[^\\t]*".join(chars) + "[^\\t]*"
+
+        nick_alt = "|".join(_subseq(n) for n in nicks)
+        # Wrap the subseq with the user's configured nick prefix/suffix
+        # so the regex matches what's actually written in the file
+        # (e.g. weechat configured with nick_prefix="<" nick_suffix=">"
+        # writes the field as `<alice>` between tabs).
+        wp = re.escape(q.nick_wrap_prefix)
+        ws = re.escape(q.nick_wrap_suffix)
+        anchor = rf"\t{wp}({nick_alt}){ws}\t"
+        if pattern:
+            body = pattern if q.regex else re.escape(pattern)
+            pattern = rf"{anchor}.*{body}"
+        else:
+            pattern = anchor
+    elif not pattern:
+        # no query at all, nothing to search
+        return
+    if regex_mode:
+        args += ["-e", pattern]
+    else:
+        args += ["-F", "-e", pattern]
+
+    # rg has no --files-from; pass paths as positional args, chunked to
+    # stay well under ARG_MAX (~2 MB on Linux). 10k paths * ~80 chars ≈ 800 KB.
+    for i in range(0, len(paths), CHUNK):
+        chunk = paths[i:i + CHUNK]
+        proc = await asyncio.create_subprocess_exec(
+            *args, *chunk,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        assert proc.stdout
+        try:
+            async for line in proc.stdout:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    # rg occasionally emits a non-JSON progress/banner line
+                    # (e.g. on binary-file skips). Drop it and keep reading.
+                    continue
+                if obj.get("type") != "match":
+                    continue
+                data = obj["data"]
+                path = data["path"]["text"]
+                line_no = data["line_number"]
+                raw = data["lines"].get("text") or ""
+                ts, who, msg, is_event = parse_line(raw)
+                if q.hide_events and is_event:
+                    continue
+                # Post-filter by line timestamp: legacy logs span all dates.
+                # Fail-open: unparseable timestamps are included rather
+                # than silently dropped, so garbled lines stay visible.
+                if q.date_from or q.date_to:
+                    d = extract_date(ts)
+                    if d is not None and q.date_from and d < q.date_from:
+                        continue
+                    if d is not None and q.date_to and d > q.date_to:
+                        continue
+                # Strip configured nick prefix/suffix wrappers so display
+                # and downstream filtering see the bare nick.
+                if q.nick_wrap_prefix or q.nick_wrap_suffix:
+                    who = strip_nick_wrappers(
+                        who, q.nick_wrap_prefix, q.nick_wrap_suffix,
+                    )
+                # Strip WeeChat colour codes if logger.file.color_lines
+                # was on when the file was written.
+                if "\x19" in msg or "\x1a" in msg or "\x1c" in msg:
+                    msg = strip_weechat_colors(msg)
+                yield Match(path, line_no, ts, who, msg, is_event)
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), 1.0)
+                except TimeoutError:
+                    proc.kill()
+
+
+# ---------- preview ----------
+
+def _plain_context_lines(
+    path: str, line_no: int, span: int, hide_events: bool,
+) -> list[str]:
+    """Plain-text version of the context window, used by 'yank context'.
+    Same filtering as the on-screen rendering so what you copy matches
+    what you see."""
+    lo = max(1, line_no - span)
+    hi = line_no + span
+    out: list[str] = []
+    try:
+        with open_log(path) as f:
+            for i, ln in enumerate(f, 1):
+                if i < lo:
+                    continue
+                if i > hi:
+                    break
+                ts, who, msg, is_event = parse_line(ln)
+                if hide_events and is_event and i != line_no:
+                    continue
+                marker = ">>" if i == line_no else "  "
+                out.append(f"{marker} {ts}\t{who}\t{msg}")
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return []
+    return out
+
+
+def read_context(
+    path: str,
+    line_no: int,
+    span: int = 100,
+    hide_events: bool = True,
+    use_osc8: bool = False,
+) -> tuple[Table, int]:
+    """Build a Rich Table with coloured nicks, linkified URLs, dim events.
+
+    Renders as a grid so long messages wrap with their indent aligned to
+    the start of the message column (Rich Table overflow='fold'),
+    instead of spilling back to column 0 on the next line.
+    """
+    lo = max(1, line_no - span)
+    hi = line_no + span
+    parsed: list[tuple[bool, bool, str, str, str]] = []
+    try:
+        with open_log(path) as f:
+            for i, ln in enumerate(f, 1):
+                if i < lo:
+                    continue
+                if i > hi:
+                    break
+                ts, who, msg, is_event = parse_line(ln)
+                if hide_events and is_event and i != line_no:
+                    continue
+                parsed.append((i == line_no, is_event, extract_hms(ts), who or "·", msg))
+    except (OSError, EOFError, gzip.BadGzipFile) as e:
+        # Preview is advisory: surface the error inline, keep the TUI alive.
+        tbl = Table.grid()
+        tbl.add_column()
+        tbl.add_row(Text(f"(error reading {path}: {e})", style="red"))
+        return tbl, 0
+    tbl = Table.grid(padding=(0, 1), expand=True)
+    tbl.add_column(width=2, no_wrap=True)                  # hit marker
+    tbl.add_column(width=8, no_wrap=True)                  # HH:MM:SS
+    nick_w = min(20, max((len(w) for _, _, _, w, _ in parsed), default=1))
+    tbl.add_column(width=nick_w, no_wrap=True)             # nick
+    tbl.add_column(ratio=1, overflow="fold")               # message, wraps
+    match_row_index = 0
+    for idx, (is_hit, is_event, hms, who, msg) in enumerate(parsed):
+        if is_hit:
+            match_row_index = idx
+        line_style = "dim" if is_event and not is_hit else ""
+        marker = Text(">>" if is_hit else "  ",
+                      style="bold yellow" if is_hit else line_style)
+        time_cell = Text(hms, style=line_style)
+        nick_cell = Text(
+            who[:nick_w],
+            style=(line_style if is_event else nick_color(who)),
+        )
+        msg_cell = render_message(msg, use_osc8)
+        if line_style:
+            msg_cell.stylize(line_style)
+        tbl.add_row(marker, time_cell, nick_cell, msg_cell)
+    return tbl, match_row_index
+
+
+# ---------- TUI ----------
+
+class Chip(Checkbox):
+    BUTTON_LEFT = " "
+    BUTTON_INNER = "\u2713"
+    BUTTON_RIGHT = " "
+
+
+class SpanInput(Input):
+    """Small Input for the context ± length.
+
+    Shows a muted 'context length' placeholder when empty so the field
+    matches the look of the other inputs in the chip row. When the user
+    focuses the field, it auto-populates with the app's current span so
+    the value is visible and editable rather than re-typed from memory.
+    """
+
+    def on_focus(self) -> None:
+        if not self.value:
+            span = getattr(self.app, "_context_span", 100)
+            self.value = str(span)
+
+
+class ConfirmExport(ModalScreen[bool]):
+    CSS = """
+    ConfirmExport { align: center middle; }
+    #dialog { width: 70; height: auto; padding: 1 2; border: thick $accent;
+              background: $surface; }
+    #dialog Label { margin-bottom: 1; }
+    #buttons { align-horizontal: right; height: 3; margin-top: 1; }
+    #buttons Button { margin-left: 2; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "confirm", "Confirm"),
+    ]
+
+    def __init__(self, path: Path, row_count: int) -> None:
+        super().__init__()
+        self._path = path
+        self._rows = row_count
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(
+                Text.from_markup(
+                    f"Export [b]{self._rows}[/b] rows to\n"
+                    f"[b cyan]{self._path}[/b cyan] ?"
+                )
+            )
+            yield Label(
+                Text("Note: /tmp is cleared on reboot.", style="dim"),
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Cancel", id="cancel", variant="default")
+                yield Button("Export", id="ok", variant="primary")
+
+    def on_mount(self) -> None:
+        # Default-focus Export: the action is already gated behind
+        # Ctrl+E, so Enter should confirm, not require Tab first.
+        self.query_one("#ok", Button).focus()
+
+    @on(Button.Pressed, "#ok")
+    def _ok(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class ClipboardConsent(ModalScreen[bool]):
+    CSS = """
+    ClipboardConsent { align: center middle; }
+    #dialog { width: 56; height: auto; padding: 1 2; border: thick $accent;
+              background: $surface; }
+    #buttons { align-horizontal: right; height: 3; margin-top: 1; }
+    #buttons Button { margin-left: 2; }
+    """
+    BINDINGS = [
+        Binding("y", "yes", "Yes"),
+        Binding("n", "no", "No"),
+        Binding("escape", "no", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("Enable clipboard writes (OSC 52) for this session?")
+            with Horizontal(id="buttons"):
+                yield Button("No", id="cancel", variant="default")
+                yield Button("Yes", id="ok", variant="primary")
+
+    @on(Button.Pressed, "#ok")
+    def _yes(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#cancel")
+    def _no(self) -> None:
+        self.dismiss(False)
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
+class HelpScreen(ModalScreen):
+    CSS = """
+    HelpScreen { align: center middle; }
+    #help-dialog { width: 76; height: auto; max-height: 80%; padding: 1 2;
+                   border: thick $primary; background: $surface; }
+    #help-dialog Static { margin-bottom: 1; }
+    """
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("question_mark", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Static(Text.from_markup(
+                "[b]Hindsight[/b] key bindings\n\n"
+                "[b]/[/b]          focus search bar\n"
+                "[b]Ctrl+L[/b]    focus tree\n"
+                "[b]F2[/b]        toggle filter bar\n"
+                "[b]F3[/b]        toggle context pane\n"
+                "[b]F4[/b]        toggle tree pane\n"
+                "[b]Enter[/b]     open match in $PAGER at line\n"
+                "[b]y[/b]          yank current row (needs clip chip)\n"
+                "[b]Y[/b]          yank focused pane (tree/results/context)\n"
+                "[b]Ctrl+E[/b]    export results to /tmp as TSV\n"
+                "[b]Ctrl+P[/b]    palette: themes, actions, tree jumps\n"
+                "[b]?[/b]          this help\n"
+                "[b]Ctrl+Q[/b]    quit\n\n"
+                "[b]Scope chips[/b] (what gets searched)\n"
+                "  [b]archives[/b]     include rotated .gz / .zst logs\n"
+                "  [b]meta[/b]         include core, chanmon, highmon\n"
+                "  [b]events[/b]       show join / part / topic lines\n"
+                "  [b]znc[/b]          include *status, *controlpanel\n"
+                "  [b]soju[/b]         include BouncerServ control buffer\n"
+                "  [b]services[/b]     include ChanServ, NickServ, ...\n\n"
+                "[b]Display chips[/b] (what gets shown)\n"
+                "  [b]date/ago/chan/who[/b]  toggle result columns\n"
+                "  [b]context[/b]      show/hide context pane\n"
+                "  [b]clip[/b]         enable clipboard writes (y/Y)\n\n"
+                "[dim]Press ? or Esc to close.[/dim]"
+            ))
+
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
+
+
+class HindsightCommands(Provider):
+    """Custom commands for the Ctrl+P palette."""
+
+    async def search(self, query: str):
+        commands = self._commands()
+        matcher = self.matcher(query)
+        for label, callback, help_text in commands:
+            score = matcher.match(label)
+            if score > 0:
+                yield Hit(score, label, callback, help=help_text)
+
+    async def discover(self):
+        for label, callback, help_text in self._commands():
+            yield Hit(1.0, label, callback, help=help_text)
+
+    def _commands(self) -> list[tuple[str, object, str]]:
+        app = self.app
+
+        def _toggle_chip(chip_id: str):
+            def go():
+                try:
+                    cb = app.query_one(f"#{chip_id}", Checkbox)
+                    cb.value = not cb.value
+                except NoMatches:
+                    pass
+            return go
+
+        return [
+            ("Toggle system buffers", _toggle_chip("q-system"),
+             "znc, soju, services, meta"),
+            ("Toggle archives", _toggle_chip("q-archives"),
+             ".gz / .zst rotated logs"),
+            ("Toggle event lines", _toggle_chip("q-events"),
+             "join / part / topic"),
+            ("Toggle compact view", _toggle_chip("col-compact"),
+             "minimal columns"),
+            ("Toggle context pane", _toggle_chip("col-context"),
+             "preview below results"),
+            ("Toggle filter bar", lambda: app.action_toggle_filters(),
+             "F2"),
+            ("Toggle tree", lambda: app.action_toggle_tree(),
+             "F4"),
+            ("Export results", lambda: app.action_export(),
+             "Ctrl+E"),
+            ("Show help", lambda: app.action_help(),
+             "?"),
+        ]
+
+
+class Hindsight(App):
+    TITLE = "Hindsight"
+    SUB_TITLE = "weechat log search"
+    COMMANDS = App.COMMANDS | {HindsightCommands}
+    CSS = """
+    Screen { layout: vertical; }
+
+    /* Filter panel. Muted border so it doesn't compete with the
+       results pane. F2 collapses the card. */
+    #filters {
+        height: auto;
+        padding: 0 1;
+        margin: 0;
+        border: round $panel-lighten-2;
+        background: $panel;
+    }
+    #filters.hidden { display: none; }
+    #filters .row {
+        height: auto;
+        margin: 0;
+        align: left middle;
+    }
+    #filters .section-label {
+        width: 9;
+        padding: 0;
+        margin-right: 2;
+        color: $text-muted;
+        text-style: bold;
+        text-align: right;
+    }
+    #filters Label {
+        padding: 0 1 0 0;
+        color: $text-muted;
+    }
+    #filters .chip-label {
+        padding: 0;
+        margin: 0 1 0 0;
+        color: $text-muted;
+        text-style: italic;
+    }
+    #filters Input {
+        width: 30;
+        border: none;
+        padding: 0 1;
+        margin-right: 2;
+        background: $surface;
+        color: $text;
+    }
+    #filters Input.short { width: 14; }
+    #filters Input.tiny { width: 16; }
+    #filters .chips { padding: 0; }
+    #filters Input:focus {
+        background: $boost;
+        border-left: thick $accent;
+        padding: 0 1 0 0;
+    }
+    /* Chips: muted outline at rest, filled accent on check, accent
+       border on hover, primary border on keyboard focus. The Chip
+       subclass replaces the X indicator with a checkmark. */
+    #filters Chip, #filters Checkbox {
+        padding: 0 1;
+        margin: 0 1 0 0;
+        border: round $panel-lighten-2;
+        background: transparent;
+        color: $text-muted;
+    }
+    #filters Chip:hover, #filters Checkbox:hover {
+        border: round $panel-lighten-3;
+        color: $text;
+    }
+    #filters Chip.-on, #filters Checkbox.-on {
+        border: round $accent;
+        background: $accent 15%;
+        color: $accent;
+        text-style: bold;
+    }
+    #filters Chip:focus, #filters Checkbox:focus {
+        border: round $primary;
+        text-style: bold;
+    }
+    #filters #filters-hint { display: none; }
+
+    #main { height: 1fr; }
+    /* Tree: muted border; accent reserved for focus ring. */
+    #tree-pane { width: 28; border-right: solid $panel-lighten-2; }
+    #tree-pane.hidden { display: none; }
+    #tree { height: 1fr; overflow-x: auto; }
+
+    /* Responsive layout. */
+    Screen.-narrow #tree-pane { width: 22; }
+    Screen.-narrow #preview-box { height: 18; }
+    Screen.-narrow #filters .section-label { display: none; }
+    Screen.-narrow #filters { padding: 0 1; margin: 0 1 0 1; }
+    Screen.-narrow #filters Input { width: 26; }
+    Screen.-narrow #filters .short { width: 12; }
+    Screen.-wide #tree-pane { width: 36; }
+    Screen.-wide #preview-box { height: 34; }
+    #tree-hint { height: 1; padding: 0 1; color: $text-muted; background: $panel; }
+
+    #results-pane { width: 1fr; }
+    /* Pane borders are muted; the title bar uses a subtle panel
+       background instead of the saturated accent. */
+    #results-box { height: 1fr; border: round $panel-lighten-2; }
+    #results-box > .pane-title {
+        dock: top; height: 1; padding: 0 1;
+        background: $panel-lighten-1; color: $text; text-style: bold;
+    }
+    #results { height: 1fr; }
+
+    #preview-box { height: 26; border: round $panel-lighten-2; }
+    #preview-box.hidden { display: none; }
+    #preview-box > .pane-title {
+        dock: top; height: 1; padding: 0 1;
+        background: $panel-lighten-1; color: $text; text-style: bold;
+    }
+    #preview-content { height: 1fr; padding: 0 1; }
+    #preview-content:focus { border-left: wide $accent; }
+
+    """
+    # Order matters: Footer renders bindings left-to-right in this order.
+    # Putting Palette first pins it to the left instead of the default
+    # right-docked slot that Footer reserves for the command palette.
+    BINDINGS = [
+        Binding("ctrl+p", "command_palette", "Palette", priority=True),
+        Binding("slash", "focus_query", "Search"),
+        Binding("ctrl+l", "focus_tree", "Tree"),
+        Binding("f2", "toggle_filters", "Filters"),
+        Binding("f3", "toggle_context", "Context"),
+        Binding("f4", "toggle_tree", "Tree"),
+        Binding("enter", "open_pager", "Open"),
+        Binding("y", "yank", "Yank row"),
+        Binding("Y", "yank_context", "Yank ctx", priority=True),
+        Binding("ctrl+e", "export", "Export"),
+        Binding("question_mark", "help", "?", priority=True),
+        Binding("ctrl+q", "quit", "Quit"),
+    ]
+
+    def __init__(
+        self,
+        logs_dir: Path,
+        index: list[LogFile],
+        theme: str = "auto",
+        index_stats: dict | None = None,
+    ):
+        super().__init__()
+        self.logs_dir = logs_dir
+        self.index = index
+        # path -> LogFile lookup so display uses the indexed buffer name
+        # (Path.stem only strips one extension, breaks on legacy logs).
+        self._by_path: dict[str, LogFile] = {lf.path: lf for lf in index}
+        nick_wp, nick_ws = read_weechat_nick_wrappers()
+        self.query = Query(
+            nick_wrap_prefix=nick_wp,
+            nick_wrap_suffix=nick_ws,
+        )
+        self._matches: list[Match] = []
+        self._compact = False
+        self._matched_only = False
+        # Last UNSCOPED hit counts for the tree. Tree always reflects
+        # global results, not scoped (per-network) ones.
+        self._tree_net_hits: dict[str, int] = {}
+        self._tree_buf_hits: dict[tuple[str, str], int] = {}
+        self._theme_pref = theme
+        self._clipboard_consent = False
+        self._use_osc8 = not terminal_autolinks_urls()
+        self._stats = index_stats or {}
+        self._context_span = 100       # configurable via the 'context ±' input
+        self._preview_timer = None     # debounces RowHighlighted fires
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        with Vertical(id="filters"):
+            # Row 1: inputs.
+            with Horizontal(classes="row"):
+                yield Input(placeholder="Search…", id="q-text")
+                yield Input(placeholder="Nick(s)", id="q-nick", classes="short")
+                yield Input(
+                    placeholder="From YYYY-MM-DD", id="q-from", classes="short",
+                    validate_on=["changed"],
+                    validators=[ValidateFunc(
+                        lambda s: s == "" or _parse_date(s) is not None,
+                        "YYYY-MM-DD",
+                    )],
+                )
+                yield Input(
+                    placeholder="To YYYY-MM-DD", id="q-to", classes="short",
+                    validate_on=["changed"],
+                    validators=[ValidateFunc(
+                        lambda s: s == "" or _parse_date(s) is not None,
+                        "YYYY-MM-DD",
+                    )],
+                )
+                yield SpanInput(
+                    placeholder="context length",
+                    id="ctx-span", classes="tiny",
+                )
+            # Row 2: all chips. Scope modifiers, then display toggles.
+            with Horizontal(classes="row chips"):
+                yield Chip("regex", id="q-regex")
+                yield Chip("case", id="q-case")
+                yield Chip("events", value=False, id="q-events")
+                yield Chip("archives", value=False, id="q-archives")
+                yield Chip("system", value=False, id="q-system")
+                yield Label("show", classes="chip-label")
+                yield Chip("compact", value=False, id="col-compact")
+                yield Chip("context", value=True, id="col-context")
+                yield Chip("hits only", value=False, id="col-matched")
+        with Horizontal(id="main"):
+            with Vertical(id="tree-pane"):
+                yield Tree("networks", id="tree")
+                yield Static(
+                    "[b]↑↓[/b] move  [b]→[/b] expand  [b]Enter[/b] select",
+                    id="tree-hint",
+                )
+            with Vertical(id="results-pane"):
+                with Vertical(id="results-box"):
+                    yield Static("Results", id="results-title", classes="pane-title")
+                    yield DataTable(id="results", cursor_type="row", zebra_stripes=True)
+                with Vertical(id="preview-box"):
+                    yield Static(
+                        "Context - select a result",
+                        id="preview-title", classes="pane-title",
+                    )
+                    yield RichLog(
+                        max_lines=500, wrap=True, markup=True,
+                        id="preview-content",
+                    )
+        yield Footer(show_command_palette=False)
+
+    def on_mount(self) -> None:
+        self._apply_theme()
+        self._populate_tree()
+        self._rebuild_columns()
+        self._show_onboarding()
+        self._apply_responsive_layout()
+        self.query_one("#q-text", Input).focus()
+        s = self._stats
+        ms = s.get("elapsed_ms", 0)
+        if s.get("cache_hit"):
+            self.notify(
+                f"Cache loaded ({ms} ms)", severity="information", timeout=3,
+            )
+        else:
+            self.notify(
+                f"Index built and cached ({ms} ms)", severity="warning", timeout=4,
+            )
+
+    def on_resize(self) -> None:
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self) -> None:
+        """Pick a responsive class on the Screen based on terminal width
+        and apply sensible defaults for each breakpoint. Also auto-hides
+        heavy panes when the terminal is too cramped to show them well.
+
+        Users can still F3 / F4 to reclaim the context / tree panes on
+        narrow screens, and F2 to reclaim the filter bar.
+        """
+        width = self.size.width or 120
+        screen = self.screen
+        for cls in ("-narrow", "-wide"):
+            screen.remove_class(cls)
+        if width < 100:
+            screen.add_class("-narrow")
+        elif width >= 180:
+            screen.add_class("-wide")
+
+        # First-fit auto-hide: if the terminal is very tight, hide
+        # panes that would otherwise squeeze out the results column.
+        # Does not override a user who has explicitly toggled them.
+        # One-shot: only auto-hide panes on the very first layout pass.
+        # After that, the user has seen (and possibly toggled) them, so
+        # a mid-session resize shouldn't undo their choices.
+        if not getattr(self, "_responsive_initialised", False):
+            try:
+                tree_pane = self.query_one("#tree-pane")
+                preview_box = self.query_one("#preview-box")
+                ctx_cb = self.query_one("#col-context", Checkbox)
+                if width < 70:
+                    tree_pane.add_class("hidden")
+                    ctx_cb.value = False  # also hides preview_box
+                elif width < 100:
+                    # Medium-narrow: keep tree, drop context by default
+                    ctx_cb.value = False
+                # else: show everything
+                _ = preview_box  # reference silences unused-var lint
+                self._responsive_initialised = True
+            except NoMatches:
+                # Compose hasn't run yet; on_mount will retry later.
+                pass
+
+    def _apply_theme(self) -> None:
+        """Resolve theme preference. 'auto' delegates to Textual's own
+        dark-mode detection (current_theme.dark) instead of hand-rolling
+        COLORFGBG / GTK_THEME parsing."""
+        want = self._theme_pref
+        if want == "auto":
+            want = "dark" if self.current_theme.dark else "light"
+        available = set(self.available_themes)
+        if want in available:
+            self.theme = want
+        elif want == "light":
+            self.theme = "textual-light" if "textual-light" in available else "solarized-light"
+        elif want == "dark":
+            self.theme = "textual-dark" if "textual-dark" in available else "monokai"
+
+    def _rebuild_columns(self) -> None:
+        with self.batch_update():
+            dt = self.query_one("#results", DataTable)
+            dt.clear(columns=True)
+            headers: list[str] = []
+            if self._compact:
+                headers += ["time", "where", "message"]
+            else:
+                headers += ["when", "ago", "where", "who", "message"]
+            dt.add_columns(*headers)
+            self._render_rows()
+            # Hide column headers when there are no results so the
+            # idle/empty state doesn't show a bare header row.
+            dt.show_header = bool(self._matches)
+
+    def _row_for(self, m: Match) -> list:
+        lf = self._by_path.get(m.path)
+        buffer = lf.buffer if lf else Path(m.path).stem.split(".")[0]
+        network = lf.network if lf else ""
+        kind = classify_buffer(network, buffer) if lf else "pm"
+        row: list = []
+
+        if self._compact:
+            row.append(Text(extract_hms(m.timestamp)))
+            row.append(self._where_cell(buffer, kind, m))
+        else:
+            row.append(Text(m.timestamp))
+            row.append(Text(format_relative(m.timestamp), style="dim"))
+            row.append(self._where_cell(buffer, kind, m))
+            row.append(self._nick_cell(m, kind))
+
+        truncated_msg = len(m.message) > 120
+        msg = m.message[:120] + ("\u2026" if truncated_msg else "")
+        msg_text = render_message(msg, self._use_osc8)
+        if m.is_event:
+            msg_text.stylize("dim")
+        elif kind == "pm":
+            msg_text.stylize("magenta")
+        row.append(msg_text)
+        return row
+
+    @staticmethod
+    def _where_cell(buffer: str, kind: str, m: Match) -> Text:
+        # PM is the only kind that gets the directional arrow.
+        if kind == "pm":
+            incoming = (m.who.casefold() == buffer.casefold())
+            arrow = "← " if incoming else "→ "
+            t = Text()
+            t.append(arrow, style="bold magenta")
+            t.append(buffer, style="magenta italic")
+            return t
+        # Non-conversation kinds get a dim tag prefix so the row reads
+        # as "this is a server/monitor/znc/etc. message" rather than
+        # masquerading as chat.
+        tag_for = {
+            "server": "srv",
+            "monitor": "mon",
+            "user_core": "core",
+            "znc": "znc",
+            "soju": "soju",
+            "service": "svc",
+        }
+        tag = tag_for.get(kind)
+        if tag:
+            t = Text()
+            t.append(f"[{tag}] ", style="dim")
+            t.append(buffer, style="cyan")
+            return t
+        return Text(buffer, style="cyan")
+
+    @staticmethod
+    def _nick_cell(m: Match, kind: str) -> Text:
+        # For non-conversation kinds the file format has no nick to
+        # show; leave the cell genuinely empty rather than padding it
+        # with a placeholder.
+        if kind in ("server", "monitor", "user_core", "znc", "soju"):
+            return Text("")
+        nick_style = "dim" if m.is_event else nick_color(m.who)
+        return Text(m.who, style=nick_style)
+
+    def _render_rows(self) -> None:
+        dt = self.query_one("#results", DataTable)
+        dt.clear()
+        if not dt.columns:
+            self._rebuild_columns()
+            return
+        for m in self._matches:
+            dt.add_row(*self._row_for(m))
+        dt.show_header = bool(self._matches)
+        dt.refresh()
+
+    def _populate_tree(self) -> None:
+        """Rebuild the tree from scratch using the stored unscoped hit
+        counts. When 'hits only' is on, only networks/buffers with
+        hits appear. Called on mount, system toggle, hits-only toggle,
+        and after unscoped searches."""
+        tree = self.query_one("#tree", Tree)
+        # Save expand state.
+        expanded = set()
+        for net_node in tree.root.children:
+            if net_node.is_expanded and net_node.data:
+                expanded.add(net_node.data[1])
+        tree.clear()
+        tree.root.expand()
+        net_hits = self._tree_net_hits
+        buf_hits = self._tree_buf_hits
+        has_hits = bool(net_hits)
+        hide_unmatched = self._matched_only and has_hits
+        seen: dict[str, dict[str, set[str | None]]] = {}
+        for lf in self.index:
+            if lf.network.startswith("(") and not self.query.include_system:
+                continue
+            kind = classify_buffer(lf.network, lf.buffer)
+            if kind in ("znc", "soju", "service") and not self.query.include_system:
+                continue
+            if hide_unmatched and (lf.network, lf.buffer) not in buf_hits:
+                continue
+            seen.setdefault(lf.network, {}).setdefault(lf.buffer, set()).add(lf.day)
+        by_net = {n: {b: len(days) for b, days in bufs.items()}
+                  for n, bufs in seen.items()}
+        for net in sorted(by_net, key=str.casefold):
+            nh = net_hits.get(net, 0)
+            label = f"{net} ({nh})" if has_hits and nh else net
+            n = tree.root.add(label, data=("net", net))
+            for buf, _cnt in sorted(by_net[net].items(), key=lambda x: x[0].lstrip("#&+!").casefold()):
+                bh = buf_hits.get((net, buf), 0)
+                blabel = f"{buf} ({bh})" if has_hits and bh else buf
+                n.add_leaf(blabel, data=("buf", net, buf))
+        # Restore expand state.
+        for net_node in tree.root.children:
+            if net_node.data and net_node.data[1] in expanded:
+                net_node.expand()
+        tree.refresh()
+
+    # filter events ------------------------------------------------------
+    def _update_tree_counts(self) -> None:
+        """Called after every search. When unscoped, store the hit
+        counts and rebuild the tree. When scoped (user clicked a
+        network), leave the tree alone so it doesn't collapse or
+        lose nodes from the feedback loop."""
+        if self.query.networks or self.query.buffers:
+            # Scoped search: don't touch the tree.
+            return
+        # Unscoped: compute and store global hit counts.
+        net_hits: dict[str, int] = {}
+        buf_hits: dict[tuple[str, str], int] = {}
+        for m in self._matches:
+            lf = self._by_path.get(m.path)
+            if not lf:
+                continue
+            net_hits[lf.network] = net_hits.get(lf.network, 0) + 1
+            key = (lf.network, lf.buffer)
+            buf_hits[key] = buf_hits.get(key, 0) + 1
+        self._tree_net_hits = net_hits
+        self._tree_buf_hits = buf_hits
+        self._populate_tree()
+
+    @on(Input.Changed, "#q-text")
+    def _on_text(self, e: Input.Changed) -> None:
+        self.query.text = e.value
+        self._schedule_search()
+
+    @on(Input.Changed, "#q-nick")
+    def _on_nick(self, e: Input.Changed) -> None:
+        self.query.nick = e.value
+        self._schedule_search()
+
+    @on(Input.Changed, "#q-from")
+    def _on_from(self, e: Input.Changed) -> None:
+        self.query.date_from = _parse_date(e.value)
+        self._schedule_search()
+
+    @on(Input.Changed, "#q-to")
+    def _on_to(self, e: Input.Changed) -> None:
+        self.query.date_to = _parse_date(e.value)
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#q-regex")
+    def _on_regex(self, e: Checkbox.Changed) -> None:
+        self.query.regex = e.value
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#q-case")
+    def _on_case(self, e: Checkbox.Changed) -> None:
+        self.query.case_sensitive = e.value
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#q-events")
+    def _on_events(self, e: Checkbox.Changed) -> None:
+        # Chip inverted: checkbox on = show events. Internally the
+        # query still uses hide_events as the source of truth.
+        self.query.hide_events = not e.value
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#q-archives")
+    def _on_archives(self, e: Checkbox.Changed) -> None:
+        self.query.include_compressed = e.value
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#q-system")
+    def _on_system(self, e: Checkbox.Changed) -> None:
+        self.query.include_system = e.value
+        self._populate_tree()
+        self._schedule_search()
+
+    @on(Checkbox.Changed, "#col-compact")
+    def _on_compact(self, e: Checkbox.Changed) -> None:
+        self._compact = e.value
+        self._rebuild_columns()
+
+    @on(Checkbox.Changed, "#col-matched")
+    def _on_matched(self, e: Checkbox.Changed) -> None:
+        self._matched_only = e.value
+        # Full rebuild: structure changes (nodes added/removed).
+        self._populate_tree()
+
+    @on(Checkbox.Changed, "#col-context")
+    def _on_col_context(self, e: Checkbox.Changed) -> None:
+        box = self.query_one("#preview-box")
+        box.set_class(not e.value, "hidden")
+
+    @on(Input.Changed, "#ctx-span")
+    def _on_ctx_span(self, e: Input.Changed) -> None:
+        raw = e.value.strip()
+        if not raw.isdigit():
+            return
+        try:
+            value = int(raw)
+        except ValueError:
+            return
+        self._context_span = max(1, min(9999, value))
+        dt = self.query_one("#results", DataTable)
+        if dt.cursor_row is not None and dt.cursor_row < len(self._matches):
+            self._refresh_preview_for(self._matches[dt.cursor_row])
+
+
+    def on_worker_state_changed(self, e: Worker.StateChanged) -> None:
+        if e.worker.name == "_run" and e.state == WorkerState.RUNNING:
+            self.sub_title = "searching\u2026"
+
+    @on(Tree.NodeSelected, "#tree")
+    def _on_tree(self, e: Tree.NodeSelected) -> None:
+        data = e.node.data
+        if not data:
+            self.query.networks = set()
+            self.query.buffers = set()
+        elif data[0] == "net":
+            self.query.networks = {data[1]}
+            self.query.buffers = set()
+        elif data[0] == "buf":
+            self.query.networks = set()
+            self.query.buffers = {(data[1], data[2])}
+        self._schedule_search()
+
+    _debounce_timer = None
+
+    def _schedule_search(self) -> None:
+        if self._debounce_timer is not None:
+            self._debounce_timer.stop()
+        # 300 ms debounce: collapses fast backspace bursts into one search.
+        self._debounce_timer = self.set_timer(0.3, self._run)
+
+    @work(exclusive=True)
+    async def _run(self) -> None:
+        dt = self.query_one("#results", DataTable)
+        dt.clear()
+        self._matches.clear()
+        # Clear the preview too; otherwise a new search that yields zero
+        # hits leaves stale context from the previous query on screen,
+        # which reads as "no results but here's some context anyway".
+        self._reset_preview()
+        title = self.query_one("#results-title", Static)
+        # A search needs at least a Query or a Nick. Tree/date/event
+        # scoping alone doesn't drive a search. Explain rather than
+        # silently leaving the pane empty.
+        nicks_set = any(n for n in re.split(r"[,\s]+", self.query.nick.strip()))
+        if not self.query.text and not nicks_set:
+            self._show_onboarding()
+            self._update_tree_counts()
+            self.sub_title = "idle"
+            return
+        paths = select_files(self.index, self.query)
+        # Collect during rg, render once at end. Cancelled searches
+        # then cost zero render work.
+        collected: list[Match] = []
+        truncated = False
+        async for m in run_search(self.query, paths):
+            collected.append(m)
+            n = len(collected)
+            if n % 100 == 0:
+                title.update(
+                    f"Results - searching… {n} hits / {len(paths)} files"
+                )
+            if n >= 500:
+                truncated = True
+                break
+        collected.sort(key=_match_sort_key)
+        self._matches = collected
+        self._render_rows()
+        self._update_tree_counts()
+        n = len(self._matches)
+        hits = f"{n}+" if truncated else str(n)
+        suffix = " (truncated; try adding a nick or date range)" if truncated else ""
+        title.update(f"Results - {hits} hits / {len(paths)} files{suffix}")
+        # Echo the active query + non-default scope in the title bar so
+        # it's visible even when the filter card is F2-hidden.
+        parts = []
+        if self.query.text:
+            parts.append(f'"{self.query.text}"')
+        if self.query.nick.strip():
+            parts.append(f"@{self.query.nick.strip()}")
+        label = " ".join(parts) or "search"
+        scope = []
+        if self.query.include_compressed:
+            scope.append("+archives")
+        if self.query.include_system:
+            scope.append("+system")
+        if not self.query.hide_events:
+            scope.append("+events")
+        scope_str = (" \u00b7 " + " ".join(scope)) if scope else ""
+        self.sub_title = f"{label}{scope_str} \u00b7 {hits} hits"
+
+    def _show_onboarding(self) -> None:
+        """Show index stats and key hints in the context pane."""
+        s = self._stats
+        size = humanize_bytes(s.get("bytes", 0)) if s.get("bytes") else ""
+        kinds = s.get("kinds", {})
+        span = ""
+        if s.get("oldest") and s.get("newest"):
+            span = f"{s['oldest']} \u2192 {s['newest']}"
+        lines = [
+            "",
+            f"  [b]{s.get('total', len(self.index)):,}[/b] log files" + (f"  ({size})" if size else ""),
+            f"  [b]{s.get('networks', 0)}[/b] networks  \u00b7  "
+            f"[b]{s.get('channels', 0)}[/b] channels  \u00b7  "
+            f"[b]{s.get('pms', 0)}[/b] private chats",
+        ]
+        if span:
+            lines.append(f"  {span}")
+        # Buffer kind breakdown.
+        detail = []
+        if kinds.get("server"):
+            detail.append(f"{kinds['server']} server")
+        if kinds.get("znc"):
+            detail.append(f"{kinds['znc']} ZNC")
+        if kinds.get("soju"):
+            detail.append(f"{kinds['soju']} soju")
+        if kinds.get("service"):
+            detail.append(f"{kinds['service']} services")
+        if kinds.get("monitor"):
+            detail.append(f"{kinds['monitor']} monitor")
+        if s.get("compressed"):
+            detail.append(f"{s['compressed']} archived (.gz/.zst)")
+        if s.get("legacy"):
+            detail.append(f"{s['legacy']} legacy")
+        if detail:
+            lines.append(f"  [dim]{' \u00b7 '.join(detail)}[/dim]")
+        if s.get("elapsed_ms") is not None:
+            tag = "cached" if s.get("cache_hit") else "built"
+            lines.append(f"  Index {tag} in [b]{s['elapsed_ms']}[/b] ms")
+        lines += [
+            "",
+            "  [b]/[/b] search  \u00b7  [b]Ctrl+L[/b] tree  \u00b7  [b]?[/b] help",
+        ]
+        with self.batch_update():
+            self.query_one("#results-title", Static).update("Results")
+            self.query_one("#results", DataTable).clear()
+            # Show the logs directory path as the preview title.
+            self.query_one("#preview-title", Static).update(
+                s.get("logs_dir", str(self.logs_dir))
+            )
+            preview = self.query_one("#preview-content", RichLog)
+            preview.clear()
+            preview.write(Text.from_markup("\n".join(lines)))
+
+    def _reset_preview(self) -> None:
+        self.query_one("#preview-title", Static).update(
+            "Context - select a result"
+        )
+        preview = self.query_one("#preview-content", RichLog)
+        preview.clear()
+        preview.write("(no selection)")
+
+    @on(DataTable.RowHighlighted, "#results")
+    def _on_row(self, e: DataTable.RowHighlighted) -> None:
+        # Debounce: cursor flying through the table via PgDn/j/k should
+        # not trigger one context read per row. Coalesce bursts into a
+        # single read for whatever row the cursor ends up on.
+        if e.cursor_row is None or e.cursor_row >= len(self._matches):
+            return
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+        m = self._matches[e.cursor_row]
+        self._preview_timer = self.set_timer(
+            0.12, lambda: self._refresh_preview_for(m)
+        )
+
+    def _refresh_preview_for(self, m: Match) -> None:
+        span = self._context_span
+        table, match_row = read_context(
+            m.path, m.line_no, span, self.query.hide_events, self._use_osc8,
+        )
+        preview = self.query_one("#preview-content", RichLog)
+        preview.clear()
+        preview.write(table)
+        rel = os.path.relpath(m.path, self.logs_dir)
+        ev = "" if self.query.hide_events else " (including events)"
+        self.query_one("#preview-title", Static).update(
+            f"Context: grep --context={span} --line-number --extended-regexp "
+            f"'…' {rel}  →  line {m.line_no}{ev}"
+        )
+        # Scroll so the matched line sits in the middle of the visible
+        # area, with lines both above and below.
+        def _center() -> None:
+            visible = preview.size.height or 20
+            target_y = max(0, match_row - visible // 2)
+            preview.scroll_to(y=target_y, animate=False)
+
+        self.call_after_refresh(_center)
+
+    # actions ------------------------------------------------------------
+    def action_focus_query(self) -> None:
+        self.query_one("#q-text", Input).focus()
+
+    def action_focus_tree(self) -> None:
+        self.query_one("#tree", Tree).focus()
+
+    def action_toggle_filters(self) -> None:
+        bar = self.query_one("#filters")
+        bar.set_class(not bar.has_class("hidden"), "hidden")
+
+    def action_toggle_context(self) -> None:
+        # Flip the 'context' checkbox; the existing handler on the
+        # checkbox's Changed event takes care of hiding / showing the
+        # pane, so visible state stays in sync with the knob.
+        cb = self.query_one("#col-context", Checkbox)
+        cb.value = not cb.value
+
+    def action_toggle_tree(self) -> None:
+        pane = self.query_one("#tree-pane")
+        pane.set_class(not pane.has_class("hidden"), "hidden")
+
+    def action_help(self) -> None:
+        self.push_screen(HelpScreen())
+
+    def _ensure_clipboard_consent(self, then: str) -> bool:
+        """On first yank attempt, show a dialog. Returns True if
+        already consented; False if the dialog was pushed (caller
+        should return early and let the callback re-invoke `then`)."""
+        if self._clipboard_consent:
+            return True
+
+        def _on_answer(yes: bool) -> None:
+            if yes:
+                self._clipboard_consent = True
+                self.notify("Clipboard writes enabled for this session.", timeout=3)
+                if then == "yank":
+                    self.action_yank()
+                elif then == "yank_context":
+                    self.action_yank_context()
+
+        self.push_screen(ClipboardConsent(), _on_answer)
+        return False
+
+    def action_yank(self) -> None:
+        if not self._ensure_clipboard_consent("yank"):
+            return
+        dt = self.query_one("#results", DataTable)
+        row = dt.cursor_row
+        if row is None or row >= len(self._matches):
+            return
+        m = self._matches[row]
+        line = f"{m.timestamp}\t{m.who}\t{m.message}"
+        self.copy_to_clipboard(line)
+        warn = " (likely clipped by terminal)" if _clipboard_too_large(line) else ""
+        self.notify(f"Row copied.{warn}", timeout=2)
+
+    def action_yank_context(self) -> None:
+        """Focus-aware pane yank.
+
+        Whichever pane the user last clicked / focused is the copy
+        target. This sidesteps the terminal's rectangular-select
+        picking up whitespace from neighbouring panes:
+
+          * tree focused    -> networks + buffers listing as text
+          * results focused -> all current result rows as TSV
+          * context focused -> context window for the selected row
+          * nothing focused -> context window (same default as before)
+        """
+        if not self._ensure_clipboard_consent("yank_context"):
+            return
+        focused = self.focused
+        target = "context"  # default
+        if focused is not None:
+            # Walk up the focus ancestry to identify which pane owns it.
+            fid = focused.id or ""
+            anc_ids = {w.id for w in focused.ancestors if w.id}
+            if fid == "tree" or "tree-pane" in anc_ids:
+                target = "tree"
+            elif fid == "results" or "results-box" in anc_ids:
+                target = "results"
+            elif "preview" in fid or "preview-box" in anc_ids:
+                target = "context"
+
+        if target == "tree":
+            tree = self.query_one("#tree", Tree)
+            lines = []
+            for net_node in tree.root.children:
+                lines.append(str(net_node.label))
+                for buf_node in net_node.children:
+                    lines.append(f"  {buf_node.label}")
+            if not lines:
+                self.notify("Tree is empty.", severity="warning")
+                return
+            payload = "\n".join(lines)
+            self.copy_to_clipboard(payload)
+            warn = " (likely clipped by terminal)" if _clipboard_too_large(payload) else ""
+            self.notify(f"Copied tree ({len(lines)} lines).{warn}", timeout=3)
+            return
+
+        if target == "results":
+            if not self._matches:
+                self.notify("No results to copy.", severity="warning")
+                return
+            lines = [
+                f"{m.timestamp}\t{m.who}\t{m.message}"
+                for m in self._matches
+            ]
+            payload = "\n".join(lines)
+            self.copy_to_clipboard(payload)
+            warn = " (likely clipped by terminal)" if _clipboard_too_large(payload) else ""
+            self.notify(f"Copied {len(lines)} result rows.{warn}", timeout=3)
+            return
+
+        # context (default)
+        dt = self.query_one("#results", DataTable)
+        row = dt.cursor_row
+        if row is None or row >= len(self._matches):
+            self.notify("No context to copy.", severity="warning")
+            return
+        m = self._matches[row]
+        lines = _plain_context_lines(
+            m.path, m.line_no, self._context_span, self.query.hide_events,
+        )
+        if not lines:
+            self.notify("No context to copy.", severity="warning")
+            return
+        payload = "\n".join(lines)
+        copy_to_clipboard_osc52(payload)
+        warn = " (likely clipped by terminal)" if _osc52_payload_size(payload) > OSC52_SAFE_BYTES else ""
+        self.notify(f"Copied {len(lines)} context lines.{warn}", timeout=3)
+
+    def action_export(self) -> None:
+        if not self._matches:
+            self.notify("Nothing to export.", severity="warning")
+            return
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = Path("/tmp") / f"weelog-hindsight-{stamp}.tsv"
+
+        def _do_export(confirm: bool) -> None:
+            if not confirm:
+                return
+            # csv.writer with excel-tab quotes any field containing a
+            # tab, newline, or quote, so messages with embedded tabs
+            # (parse_line uses split("\t", 2)) don't shred the layout.
+            with open_w(out, encoding="utf-8", newline="") as f:
+                f.write("# timestamp\tbuffer\tnick\tmessage\tsource\n")
+                w = csv.writer(f, dialect="excel-tab")
+                for m in self._matches:
+                    buf = Path(m.path).stem.split(".")[0]
+                    src = os.path.relpath(m.path, self.logs_dir)
+                    w.writerow([
+                        m.timestamp, buf, m.who, m.message,
+                        f"{src}:{m.line_no}",
+                    ])
+            self.notify(f"Exported {len(self._matches)} rows → {out}", timeout=5)
+
+        self.push_screen(ConfirmExport(out, len(self._matches)), _do_export)
+
+    def action_open_pager(self) -> None:
+        dt = self.query_one("#results", DataTable)
+        row = dt.cursor_row
+        if row is None or row >= len(self._matches):
+            return
+        m = self._matches[row]
+        # PAGER follows the usual convention of being shell-evaluated
+        # ("less -R", "bat --paging=always", ...). Path comes from the
+        # filesystem so it must be shell-quoted to survive odd names.
+        pager = os.environ.get("PAGER", "less")
+        quoted = shlex.quote(m.path)
+        line = f"+{m.line_no}"
+        if m.path.endswith(".gz"):
+            cmd = f"zcat {quoted} | {pager} {line}"
+        elif m.path.endswith(".zst"):
+            cmd = f"zstdcat {quoted} | {pager} {line}"
+        else:
+            cmd = f"{pager} {line} {quoted}"
+        with self.suspend():
+            subprocess.run(cmd, shell=True, check=False)
+
+
+def _parse_date(s: str) -> date | None:
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+HELP_EPILOG = """\
+Filters:
+  Query         text or regex
+  regex/case    smart-case off, regex mode
+  hide events   drop join/part/topic/mode lines
+  archives      also search rotated, compressed log files (.gz, .zst)
+  meta          include weechat's own aggregator buffers (core.chanmon
+                etc.). Off by default because they duplicate real lines
+  Nick          one or more nicks (anchored; no body mentions)
+  From / To     YYYY-MM-DD inclusive
+  Columns       toggle date/ago/channel/nick columns
+  clipboard     enables y; clipboard is not read until checked
+  context       show or hide the Context pane at the bottom
+
+Keys:
+  Ctrl+P palette · / Query · Ctrl+L tree · F2 toggle filters
+  Enter open in $PAGER · y yank row · Y yank ctx · Ctrl+E export · Ctrl+Q quit
+  Tab / arrows / Space / PgUp/PgDn work everywhere
+
+Logs directory:
+  --logs DIR              explicit path (highest priority)
+  $WEELOG_DIR             environment variable fallback
+  If neither is set, the tool exits with a hint.
+
+Theme:  --theme auto|dark|light|<textual-theme-name>
+URLs are linkified (OSC 8) except where the terminal already does it
+(Kitty, WezTerm, iTerm2, Ghostty, foot, VTE).
+
+A search needs at least a Query or a Nick. Other knobs narrow, they
+don't drive.
+"""
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        prog="weelog-hindsight",
+        description=(
+            "weelog-hindsight (Hindsight). A TUI search over a weechat logs "
+            "directory. Indexes "
+            "both the legacy flat layout (plugin.name.weechatlog[.N][.gz]) and "
+            "the dated YYYY/<network>/<buffer>.MM-DD.log hierarchy; full-text "
+            "search is powered by ripgrep and handles rotated .gz/.zst files "
+            "transparently."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=HELP_EPILOG,
+    )
+    ap.add_argument(
+        "--logs", type=Path, metavar="DIR",
+        help=(
+            "weechat logs directory (typically ~/.local/share/weechat/logs). "
+            "Falls back to the WEELOG_DIR environment variable if --logs is "
+            "not given."
+        ),
+    )
+    ap.add_argument(
+        "--theme", default="auto",
+        help=(
+            "'auto' (default, honours COLORFGBG), 'dark', 'light', or any "
+            "Textual theme name (e.g. 'gruvbox', 'nord', 'catppuccin-mocha')."
+        ),
+    )
+    args = ap.parse_args()
+
+    # Resolve logs directory: --logs flag > $WEELOG_DIR env var.
+    logs_source = "--logs"
+    if args.logs is None:
+        env = os.environ.get("WEELOG_DIR")
+        if env:
+            args.logs = Path(env)
+            logs_source = "$WEELOG_DIR"
+        else:
+            ap.error(
+                "no logs directory given. Pass --logs DIR or set the "
+                "WEELOG_DIR environment variable."
+            )
+
+    if not shutil.which("rg"):
+        sys.exit("error: ripgrep (rg) not found on PATH")
+    if not args.logs.exists():
+        sys.exit(
+            f"error: {args.logs} (from {logs_source}) does not exist.\n"
+            "  The default weechat logs path is "
+            "~/.local/share/weechat/logs"
+        )
+    if not args.logs.is_dir():
+        sys.exit(
+            f"error: {args.logs} (from {logs_source}) is not a directory."
+        )
+
+    # Install the write policy before any write can happen.
+    _set_write_policy(
+        logs_dir=args.logs,
+        cache_dir=cache_path().parent,
+        export_dir=Path("/tmp"),
+    )
+    cache_real = cache_path().resolve()
+    logs_real = args.logs.resolve()
+    if cache_real == logs_real or logs_real in cache_real.parents:
+        sys.exit(
+            f"error: the index cache path {cache_real} is inside the "
+            f"logs directory {logs_real}. Cache and logs must not "
+            "overlap. Point $XDG_CACHE_HOME elsewhere and retry."
+        )
+
+    index, stats = load_or_build_index(args.logs)
+    if not index:
+        # Give the user something actionable: show what's actually in the
+        # directory and what we were looking for.
+        try:
+            sample = sorted(os.listdir(args.logs))[:6]
+        except OSError as e:
+            sys.exit(f"error: cannot read {args.logs}: {e}")
+        listing = ", ".join(sample) if sample else "(empty)"
+        logger_conf = (
+            Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+            / "weechat" / "logger.conf"
+        )
+        default_hint = "~/.local/share/weechat/logs"
+        if logger_conf.exists():
+            default_hint += f" (confirm via 'logger.file.path' in {logger_conf})"
+        sys.exit(
+            f"error: {args.logs} does not look like a weechat logs directory.\n"
+            f"  found: {listing}\n"
+            f"  expected: files matching '<plugin>.<name>.weechatlog[.N][.gz]' "
+            f"or a 'YYYY/<network>/<buffer>.MM-DD.log' tree.\n"
+            f"  default weechat logs path: {default_hint}"
+        )
+    Hindsight(args.logs, index, theme=args.theme, index_stats=stats).run()
+
+
+if __name__ == "__main__":
+    main()
