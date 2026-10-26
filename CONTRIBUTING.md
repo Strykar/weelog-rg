@@ -23,12 +23,11 @@ python -m venv .venv
 .venv/bin/pytest
 ```
 
-Or with `uv`:
+Or with `uv`, which installs the pinned test tools from `uv.lock` on first use:
 
 ```sh
-uv venv
-uv pip install textual 'rich>=13' pytest ruff
 uv run pytest
+uv run ruff check bin/weelog-rg weelog_rg weechat tests
 ```
 
 ## A few things to know
