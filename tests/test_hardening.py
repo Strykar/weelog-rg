@@ -118,3 +118,26 @@ async def test_buffer_names_are_not_terminal_controls(
     for s in shown:
         assert "\x1b" not in s, repr(s)
     assert shown[2] == "#chan]0;PWNED\\"
+
+
+async def test_non_utf8_filenames_are_searchable(
+    app_module, tmp_path, tmp_path_factory, monkeypatch, debounce_immediate,
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
+    dated = tmp_path / "2026" / "net"
+    dated.mkdir(parents=True)
+    line = "2026-01-02 10:00:00\tbob\thello\n"
+    (dated / os.fsdecode(b"#ch\xff.01-02.log")).write_text(line, encoding="utf-8")
+    (tmp_path / os.fsdecode(b"irc.net.#old\xff.weechatlog")).write_text(line, encoding="utf-8")
+    from textual.widgets import DataTable, Input
+    idx, stats = app_module.load_or_build_index(tmp_path)
+    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    async with app.run_test(size=(200, 60)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#q-text", Input).value = "hello"
+        await pilot.pause(0.05)
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.4)
+        dt = app.query_one("#results", DataTable)
+        assert dt.row_count == 2
+        assert {str(dt.get_row_at(i)[2]) for i in range(2)} == {"#ch�", "#old�"}

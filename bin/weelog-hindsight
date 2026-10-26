@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import csv
 import gzip
@@ -123,7 +124,8 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
 
 
 def _display_name(name: str) -> str:
-    # File names reach the terminal too.
+    # File names reach the terminal too, and may not be valid UTF-8.
+    name = name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
     return _CONTROL_RE.sub("", name)
 
 
@@ -509,14 +511,14 @@ def humanize_bytes(n: int) -> str:
 def _index_key(logs_dir: Path) -> str:
     h = hashlib.sha256()
     h.update(b"schema:2\n")
-    h.update(str(logs_dir.resolve()).encode())
+    h.update(os.fsencode(logs_dir.resolve()))
     for entry in sorted(os.scandir(logs_dir), key=lambda e: e.name):
         st = entry.stat(follow_symlinks=False)
-        h.update(f"{entry.name}:{st.st_mtime_ns}:{st.st_size}\n".encode())
+        h.update(os.fsencode(entry.name) + f":{st.st_mtime_ns}:{st.st_size}\n".encode())
         if entry.is_dir() and YEAR_RE.match(entry.name):
             for sub in sorted(os.scandir(entry.path), key=lambda e: e.name):
                 ss = sub.stat(follow_symlinks=False)
-                h.update(f"  {sub.name}:{ss.st_mtime_ns}:{ss.st_size}\n".encode())
+                h.update(b"  " + os.fsencode(sub.name) + f":{ss.st_mtime_ns}:{ss.st_size}\n".encode())
     return h.hexdigest()
 
 
@@ -591,6 +593,13 @@ def parse_line(raw: str) -> tuple[str, str, str, bool]:
     return ts, who, msg, who in EVENT_PREFIXES
 
 
+def _rg_text(obj: dict) -> str:
+    # rg emits base64 "bytes" instead of "text" when the value is not valid UTF-8.
+    if "text" in obj:
+        return obj["text"]
+    return os.fsdecode(base64.b64decode(obj["bytes"]))
+
+
 # Bounds the per-nick subsequence regex.
 NICK_INPUT_MAX = 32
 CHUNK = 10000
@@ -648,7 +657,7 @@ async def run_search(q: Query, paths: list[str]):
                 if obj.get("type") != "match":
                     continue
                 data = obj["data"]
-                path = data["path"]["text"]
+                path = _rg_text(data["path"])
                 line_no = data["line_number"]
                 raw = data["lines"].get("text") or ""
                 ts, who, msg, is_event = parse_line(raw)
