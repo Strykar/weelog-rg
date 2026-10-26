@@ -1,7 +1,7 @@
 # weelog-rg
 
 Search WeeChat logs with ripgrep: channels, PMs, server buffers, services
-(ChanServ, NickServ, ...), ZNC bouncer modules, and WeeChat's own monitor and core buffers,
+(ChanServ, NickServ), ZNC bouncer modules, and WeeChat's own monitor and core buffers,
 in both the legacy flat layout (`plugin.name.weechatlog[.N][.gz]`) and the dated
 `YYYY/network/buffer.MM-DD.log` hierarchy. Index years of history once, then search
 gigabytes of it in well under a second on a modern NVMe SSD.
@@ -146,3 +146,5 @@ cp dist/weelog.py ~/.local/share/weechat/python/
 
 The results buffer is marked `no_log`, so searches are never written back into the
 logs. Typing into it runs `/weelog` again with what you typed.
+
+The WeeChat plugin and CLI are specced off existing scripts via an LLM.
