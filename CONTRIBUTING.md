@@ -1,13 +1,14 @@
 # Contributing
 
-Thanks for taking an interest. This is a single-file script. Don't be shy.
+Thanks for taking an interest. The TUI is a single-file script, the core it shares with the WeeChat script lives in `weelog_rg/`. Don't be shy.
 
 ## Quick checklist
 
 Before opening a PR:
 
-- [ ] `ruff check bin/weelog-rg tests` is clean
-- [ ] `pytest` is green
+- [ ] `ruff check bin/weelog-rg weelog_rg weechat tests` is clean
+- [ ] `pytest` is green (this includes `tests/test_build.py`, which rebuilds the
+      self-contained WeeChat script and loads it without the package on the path)
 - [ ] If you touched the TUI, run `pytest tests/test_fuzz.py` with two or three different `--seed` values
 
 ## Development setup
@@ -32,13 +33,24 @@ uv run pytest
 
 ## A few things to know
 
-The whole tool is one executable script under `bin/`. Three things worth flagging up front:
+The TUI is one executable script under `bin/`; `weelog_rg/` holds the index, query, parser and ripgrep runner, and `weechat/weelog.py` is the in-client script built on them. Three things worth flagging up front:
 
 1. **The PEP 723 shebang is load-bearing.** `#!/usr/bin/env -S uv run --script --quiet` is what makes the script a drop-in, so users don't need to create a venv. The `--script` flag matters; without it `uv` recursively re-invokes itself.
 2. **The logs directory is read-only.** Every filesystem write goes through `assert_writable(path)`. The allowlist covers the XDG cache and `/tmp/weelog-rg-*.tsv` exports. If you find yourself reaching for `open("w")` or `write_text` directly, please route it through the gate. The test suite (`tests/test_readonly.py`) checks this, but a heads-up first saves a review round trip.
 3. **`ripgrep` is the search engine.** This approach searches multi-gigabyte log directories in well under a second on a modern NVMe SSD, more than most humans accumulate in a lifetime. A persistent index would add maintenance and staleness without buying us anything noticeable, so let's not go there.
 
-A split into a proper package is tracked in `TODO.md` item 2. Until that lands, new logic stays in the single file.
+Two more things about the WeeChat script:
+
+- `weechat/weelog.py` is the source and imports the package. `python3
+  scripts/build-weechat-script.py` inlines the package into `dist/weelog.py`, the
+  one-file form weechat.org requires. Run `uvx weechat-script-lint dist/weelog.py`
+  on that file before a submission; the score must be 100.
+- `scripts/weechat-e2e/run.sh WORKDIR LOGS 'CMD;;CMD'` drives either script inside
+  `weechat-headless` with a throwaway home (logging off, cache in WORKDIR), runs the
+  `/weelog` commands and dumps the results buffer to `WORKDIR/out.txt`. It is how the
+  unhook-inside-callback crash was found; use it for anything that touches hooks.
+
+The rest of the split is tracked in `TODO.md` item 2. Until `bin/weelog-rg` becomes a shim, shared logic exists in both places: change it in `weelog_rg/` and in the script, and extend the parity tests in `tests/test_package.py` if you touch `parse_line` or `classify_buffer`.
 
 ## Design notes
 

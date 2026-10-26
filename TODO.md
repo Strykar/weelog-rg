@@ -23,6 +23,13 @@ High-level roadmap. Issues / PRs welcome.
 
 Add a CLI surface for scripting, pipelines, and quick one-liners. No TUI, no Textual, plain text output to stdout.
 
+Status: done as `python -m weelog_rg` (`weelog_rg/cli.py`, tests in
+`tests/test_cli.py`). Differences from the sketch below: the archive flag is
+`--archives` (rotated logs are `.gz` or `.zst`), the 500-hit default cap
+matches the TUI and the WeeChat script (`--limit 0` for all, truncation is
+noted on stderr), and hits are printed oldest first. Wiring it into
+the `weelog-rg` executable waits for the shim in item 2.
+
 ```
 weelog-rg --logs DIR --user alice --user bob --search "topic word"
 weelog-rg --logs DIR --user alice --from 2026-01-01 --to 2026-03-01
@@ -43,6 +50,27 @@ Reuse `Query`, `select_files`, and `run_search` without modification, since the 
 ## 2. Refactor into a reusable package
 
 Lift the logic out of the single-file script so a future WeeChat plugin (in-process, hooking `logger_backlog_*` or reading the on-disk files) can import and share it.
+
+Status: `weelog_rg/{index,query,parse,search}.py` exist and are stdlib-only
+(`tests/test_package.py` enforces it). `weechat/weelog.py` imports them.
+`bin/weelog-rg` still carries its own copy of the core; the parity tests pin
+`parse_line` and `classify_buffer`. Open:
+
+- Turn `bin/weelog-rg` into the shim. Blocked on how the PEP 723 drop-in
+  gets the package: a git dependency in the script header once the repo is
+  public, or a PyPI release.
+- `render.py` / `terminal.py` and the `tui/` move.
+- weechat.org accepts one file per script; `scripts/build-weechat-script.py`
+  inlines the package into `dist/weelog.py` for that.
+
+## 3. WeeChat script follow-ups
+
+- Jump from a hit to the live buffer and show context (cursor mode or a
+  `/weelog -go N` subcommand).
+- weechat.org submission: build `dist/weelog.py`, run `weechat-script-lint`
+  on it (must score 100), fill the "Add script" pull request template, one
+  commit adding `python/weelog.py`, subject `New script weelog.py: ...`. The
+  description has to say how this differs from `grep.py`.
 
 Suggested package layout:
 

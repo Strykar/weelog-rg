@@ -4,7 +4,14 @@ Fast, keyboard-driven TUI for reading and searching every kind of WeeChat log: c
 
 Index years of history once, then search gigabytes of it in well under a second on a modern NVMe SSD. Filter by network, channel, date range, or nick. Every hit gets colourised nicks, a live context preview, and a `$PAGER` jump on Enter. Non-conversation buffers are classified and rendered so you can read them as themselves rather than as fake chat.
 
-> *(demo asciinema link to be added)*
+## Demo
+
+[demo/demo.cast](demo/demo.cast) is an [asciinema](https://asciinema.org) recording of
+the TUI: search, filters, regex, archives, tree scoping, pager, export, theme.
+
+```sh
+asciinema play demo/demo.cast
+```
 
 ## Install
 
@@ -68,6 +75,61 @@ What the tool touches, since these are your private logs:
 - **Writes** only the index cache above and, on `Ctrl+E` after you confirm, an export file in `/tmp` created with mode 0600. A write gate aborts anything else, including anything inside the logs directory.
 - **Clipboard**: `y` and `Y` write to it through the terminal (OSC 52), only after you say yes once per session. It never reads the clipboard.
 - **Runs** `rg`, `zstdcat` or `zcat` for compressed files, and your `$PAGER` on `Enter`.
+
+## Command line
+
+`python -m weelog_rg` is the same search without the TUI: one line per hit on
+stdout, for scripts and pipelines. It needs the checkout on `PYTHONPATH` (or run it
+from the checkout) and takes `--logs DIR` or `$WEELOG_DIR` like the TUI.
+
+```sh
+python -m weelog_rg --logs ~/.local/share/weechat/logs -u alice -s "kernel panic"
+python -m weelog_rg -u alice -u bob --from 2026-01-01 --to 2026-03-01
+python -m weelog_rg -s foo --format json | jq .message
+python -m weelog_rg -s foo --format tsv | cut -f1,4,5
+python -m weelog_rg -s "pacman" --context 2 --channel '#archlinux'
+```
+
+Matching ignores case unless `--case` is given. `--regex` switches the text to a
+regular expression, `--events`, `--archives` and `--system` widen the search like the
+TUI chips. Output stops at 500 hits with a note on stderr; `--limit N` changes that and
+`--limit 0` means all. Exit status is 0 with hits, 1 without, 2 on error.
+Colour follows `--color auto|always|never` and `NO_COLOR`.
+
+## Inside WeeChat
+
+`weechat/weelog.py` runs the same search inside the client. `/weelog [options] TEXT`
+streams ripgrep hits into a `weelog` buffer, oldest first, with the logged time in
+the time column and nicks in WeeChat's own colours. The logs directory and nick
+prefix/suffix come from the live logger config, so there is nothing to configure.
+
+```sh
+git clone https://github.com/strykar/weelog-rg
+ln -s "$PWD/weelog-rg/weechat/weelog.py" ~/.local/share/weechat/python/
+```
+
+Then `/python load weelog.py` in WeeChat, or symlink into `python/autoload/` instead.
+The script imports the `weelog_rg` package from the checkout the symlink points at,
+and `rg` must be on WeeChat's `PATH`.
+
+Prefer one file with no checkout behind it? Build the self-contained version, which
+is also what goes to weechat.org:
+
+```sh
+python3 scripts/build-weechat-script.py        # writes dist/weelog.py
+cp dist/weelog.py ~/.local/share/weechat/python/
+```
+
+```
+/weelog kernel panic
+/weelog -nick alice -from 2026-01-01 kernel panic
+/weelog -here -regex (merged|closed) PR #
+/weelog -stop
+/help weelog
+```
+
+The results buffer is marked `no_log`, so searches are never written back into the
+logs. Typing into it runs `/weelog` again with what you typed.
 
 ## Roadmap
 
