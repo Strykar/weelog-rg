@@ -1,7 +1,10 @@
 #!/usr/bin/env -S uv run --script --quiet
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["textual>=0.80", "rich>=13"]
+# dependencies = ["textual==8.2.3", "rich==15.0.0"]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-26T00:00:00Z"
 # ///
 """TUI search over a WeeChat logs directory, powered by ripgrep."""
 from __future__ import annotations
