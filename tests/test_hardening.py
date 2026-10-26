@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import stat
 import subprocess
@@ -192,3 +193,54 @@ def test_cli_reports_refused_cache_write_without_traceback(
     out = (proc.stdout + proc.stderr).lower()
     assert proc.returncode != 0
     assert "refused" in out and "traceback" not in out, out
+
+
+async def _export_rows(app_module, pilot_logs, export_path, query):
+    from textual.widgets import Input
+    idx, stats = app_module.load_or_build_index(pilot_logs)
+    app = app_module.Hindsight(pilot_logs, idx, theme="dark", index_stats=stats)
+    async with app.run_test(size=(200, 60)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#q-text", Input).value = query
+        await pilot.pause(0.05)
+        await app.workers.wait_for_complete()
+        await app.run_action("export")
+        await pilot.pause(0.2)
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+    body = export_path.read_text(encoding="utf-8").splitlines()[1:]
+    return list(csv.reader(body, dialect="excel-tab"))
+
+
+async def test_export_neutralizes_spreadsheet_formulas(
+    app_module, tmp_path, export_path, monkeypatch, debounce_immediate,
+):
+    dated = tmp_path / "logs" / "2026" / "net"
+    dated.mkdir(parents=True)
+    (dated / "#c.01-02.log").write_text(
+        '2026-01-02 10:00:00\tbob\t=HYPERLINK("http://x";"hello")\n'
+        "2026-01-02 10:00:01\tbob\t+1 hello\n"
+        "2026-01-02 10:00:02\tbob\t-hello\n"
+        "2026-01-02 10:00:03\tbob\t@hello\n"
+        "2026-01-02 10:00:04\tbob\thello plain\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "new_export_path", lambda: export_path)
+    rows = await _export_rows(app_module, tmp_path / "logs", export_path, "hello")
+    assert [r[3] for r in rows] == [
+        "'=HYPERLINK(\"http://x\";\"hello\")", "'+1 hello", "'-hello", "'@hello", "hello plain",
+    ]
+
+
+async def test_export_handles_non_utf8_filenames(
+    app_module, tmp_path, export_path, monkeypatch, debounce_immediate,
+):
+    dated = tmp_path / "logs" / "2026" / "net"
+    dated.mkdir(parents=True)
+    (dated / os.fsdecode(b"#ch\xff.01-02.log")).write_text(
+        "2026-01-02 10:00:00\tbob\thello\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "new_export_path", lambda: export_path)
+    rows = await _export_rows(app_module, tmp_path / "logs", export_path, "hello")
+    assert rows[0][1] == "#ch\ufffd"
+    assert rows[0][4] == "2026/net/#ch\ufffd.01-02.log:1"

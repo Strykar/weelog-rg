@@ -391,6 +391,11 @@ def _current_allowed_roots() -> list[Path]:
     return roots
 
 
+def _tsv_cell(value: str) -> str:
+    # Spreadsheets evaluate cells starting with these as formulas.
+    return "'" + value if value and value[0] in "=+-@" else value
+
+
 def new_export_path() -> Path:
     # /tmp is shared, so the name must not be guessable from the clock.
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1746,12 +1751,12 @@ class Hindsight(App):
                 f.write("# timestamp\tbuffer\tnick\tmessage\tsource\n")
                 w = csv.writer(f, dialect="excel-tab")
                 for m in self._matches:
-                    buf = Path(m.path).stem.split(".")[0]
-                    src = os.path.relpath(m.path, self.logs_dir)
-                    w.writerow([
-                        m.timestamp, buf, m.who, m.message,
-                        f"{src}:{m.line_no}",
-                    ])
+                    lf = self._by_path.get(m.path)
+                    buf = lf.buffer if lf else _display_name(Path(m.path).stem.split(".")[0])
+                    src = _display_name(os.path.relpath(m.path, self.logs_dir))
+                    w.writerow([_tsv_cell(c) for c in (
+                        m.timestamp, buf, m.who, m.message, f"{src}:{m.line_no}",
+                    )])
             self.notify(f"Exported {len(self._matches)} rows → {out}", timeout=5)
 
         self.push_screen(ConfirmExport(out, len(self._matches)), _do_export)
