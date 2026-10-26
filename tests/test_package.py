@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from weelog_rg.index import build_index, classify_buffer, index_key, load_index
-from weelog_rg.parse import parse_line
+from weelog_rg.parse import context_groups, context_records, parse_line
 from weelog_rg.query import Query, parse_date, select_files
 from weelog_rg.search import Match, match_from_rg, rg_args, run_search
 
@@ -176,6 +176,44 @@ def test_load_index_reuses_the_cache_and_exposes_its_key(synthetic_logs):
     assert index_key(synthetic_logs) != key1
     idx3, _key3, hit3 = load_index(synthetic_logs)
     assert hit3 is False and len(idx3) == len(idx1) + 1
+
+
+def _ten_line_log(tmp_path):
+    p = tmp_path / "irc.net.#c.weechatlog"
+    lines = []
+    for i in range(1, 11):
+        who, msg = ("-->", f"someone joined {i}") if i in (4, 7) else ("alice", f"message {i}")
+        lines.append(f"2026-01-02 10:00:{i:02d}\t{who}\t{msg}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(p)
+
+
+def test_context_groups_merges_touching_ranges_and_marks_hits(tmp_path):
+    path = _ten_line_log(tmp_path)
+    groups = context_groups(path, [3, 5], span=1, hide_events=True)
+    assert [[(r[0], r[5]) for r in g] for g in groups] == [
+        [(2, False), (3, True), (5, True), (6, False)],   # line 4 is a hidden event
+    ]
+    groups = context_groups(path, [2, 8], span=1, hide_events=True)
+    assert [[r[0] for r in g] for g in groups] == [[1, 2, 3], [8, 9]]  # 7 is an event
+    groups = context_groups(path, [8, 2], span=1, hide_events=False)
+    assert [[r[0] for r in g] for g in groups] == [[1, 2, 3], [7, 8, 9]]
+    assert groups[1][0][4] is True and groups[1][0][5] is False  # event shown as context
+
+
+def test_context_groups_keeps_an_event_that_is_itself_a_hit(tmp_path):
+    path = _ten_line_log(tmp_path)
+    groups = context_groups(path, [4], span=0, hide_events=True)
+    assert [(r[0], r[2], r[4], r[5]) for r in groups[0]] == [(4, "-->", True, True)]
+
+
+def test_context_groups_edges(tmp_path):
+    path = _ten_line_log(tmp_path)
+    assert context_groups(path, [], 3, True) == []
+    assert context_groups(str(tmp_path / "missing"), [1], 3, True) == []
+    assert [r[0] for r in context_groups(path, [1], span=2, hide_events=True)[0]] == [1, 2, 3]
+    assert [r[0] for r in context_groups(path, [10], span=2, hide_events=True)[0]] == [8, 9, 10]
+    assert context_records(path, 3, 1, True) == [r[:5] for r in context_groups(path, [3], 1, True)[0]]
 
 
 def test_parse_date():

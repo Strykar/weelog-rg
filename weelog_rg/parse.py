@@ -154,27 +154,58 @@ def parse_line(raw: str) -> tuple[str, str, str, bool]:
     return ts, who, msg, who in EVENT_PREFIXES
 
 
+def context_groups(
+    path: str, line_nos: list[int], span: int, hide_events: bool,
+) -> list[list[tuple[int, str, str, str, bool, bool]]]:
+    """Lines around several hits in one file, read in a single pass.
+
+    Hits whose ranges touch share one group, like grep's context blocks.
+    Groups come back in file order; each entry is (line number, timestamp,
+    who, message, is_event, is_hit). Events are dropped unless they are hits.
+    """
+    hits = sorted(set(line_nos))
+    if not hits:
+        return []
+    ranges: list[list[int]] = []
+    for n in hits:
+        lo, hi = max(1, n - span), n + span
+        if ranges and lo <= ranges[-1][1] + 1:
+            ranges[-1][1] = max(ranges[-1][1], hi)
+        else:
+            ranges.append([lo, hi])
+    hit_set = set(hits)
+    groups: list[list[tuple[int, str, str, str, bool, bool]]] = []
+    current: list[tuple[int, str, str, str, bool, bool]] | None = None
+    r = 0
+    try:
+        with open_log(path) as f:
+            for i, ln in enumerate(f, 1):
+                while r < len(ranges) and i > ranges[r][1]:
+                    r += 1
+                    current = None
+                if r >= len(ranges):
+                    break
+                if i < ranges[r][0]:
+                    continue
+                if current is None:
+                    current = []
+                    groups.append(current)
+                ts, who, msg, is_event = parse_line(ln)
+                is_hit = i in hit_set
+                if hide_events and is_event and not is_hit:
+                    continue
+                current.append((i, ts, who, msg, is_event, is_hit))
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return []
+    return groups
+
+
 def context_records(
     path: str, line_no: int, span: int, hide_events: bool,
 ) -> list[tuple[int, str, str, str, bool]]:
     """Lines around line_no as (line number, timestamp, who, message, is_event)."""
-    lo = max(1, line_no - span)
-    hi = line_no + span
-    out: list[tuple[int, str, str, str, bool]] = []
-    try:
-        with open_log(path) as f:
-            for i, ln in enumerate(f, 1):
-                if i < lo:
-                    continue
-                if i > hi:
-                    break
-                ts, who, msg, is_event = parse_line(ln)
-                if hide_events and is_event and i != line_no:
-                    continue
-                out.append((i, ts, who, msg, is_event))
-    except (OSError, EOFError, gzip.BadGzipFile):
-        return []
-    return out
+    groups = context_groups(path, [line_no], span, hide_events)
+    return [rec[:5] for rec in groups[0]] if groups else []
 
 
 def context_lines(
