@@ -1,8 +1,21 @@
 # weelog-rg
 
-Fast, keyboard-driven TUI for reading and searching every kind of WeeChat log: channels, PMs, server buffers, services (ChanServ, NickServ, ...), ZNC bouncer modules, and WeeChat's own monitor and core buffers. Both the legacy flat layout (`plugin.name.weechatlog[.N][.gz]`) and the dated `YYYY/network/buffer.MM-DD.log` hierarchy.
+Search every kind of WeeChat log with ripgrep: channels, PMs, server buffers, services
+(ChanServ, NickServ, ...), ZNC bouncer modules, and WeeChat's own monitor and core buffers,
+in both the legacy flat layout (`plugin.name.weechatlog[.N][.gz]`) and the dated
+`YYYY/network/buffer.MM-DD.log` hierarchy. Index years of history once, then search
+gigabytes of it in well under a second on a modern NVMe SSD.
 
-Index years of history once, then search gigabytes of it in well under a second on a modern NVMe SSD. Filter by network, channel, date range, or nick. Every hit gets colourised nicks, a live context preview, and a `$PAGER` jump on Enter. Non-conversation buffers are classified and rendered so you can read them as themselves rather than as fake chat.
+Three front ends share one stdlib-only core, `weelog_rg/`:
+
+| | | |
+| --- | --- | --- |
+| **TUI** | `bin/weelog-rg` | Keyboard-driven: filter chips for network, channel, date and nick, colourised nicks, a live context pane, `$PAGER` jump on Enter, TSV export. [Install](#install) |
+| **CLI** | `python -m weelog_rg` | Non-interactive, for scripts and pipelines: text, JSON lines or TSV, grep-style exit codes. [Command line](#command-line) |
+| **WeeChat script** | `weechat/weelog.py` | `/weelog` searches from inside the client into a results buffer, with the logged time in the time column and WeeChat's own nick colours. [Inside WeeChat](#inside-weechat) |
+
+Matching ignores case unless asked. Non-conversation buffers are classified and hidden
+by default so you search what people said, not what servers announced.
 
 ## Demo
 

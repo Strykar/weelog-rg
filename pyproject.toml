@@ -1,7 +1,7 @@
 [project]
 name = "weelog-rg"
 version = "0.1.0"
-description = "Fast TUI search over WeeChat IRC logs, powered by ripgrep."
+description = "Search WeeChat IRC logs with ripgrep: TUI, CLI and in-client script over one core."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
