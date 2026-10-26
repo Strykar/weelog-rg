@@ -65,8 +65,8 @@ Status: `weelog_rg/{index,query,parse,search}.py` exist and are stdlib-only
 
 ## 3. WeeChat script follow-ups
 
-- Jump from a hit to the live buffer and show context (cursor mode or a
-  `/weelog -go N` subcommand).
+- Jump from a hit to the live buffer (cursor mode or a `/weelog -go N`
+  subcommand).
 - weechat.org submission: build `dist/weelog.py`, run `weechat-script-lint`
   on it (must score 100), fill the "Add script" pull request template, one
   commit adding `python/weelog.py`, subject `New script weelog.py: ...`. The

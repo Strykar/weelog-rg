@@ -124,6 +124,7 @@ cp dist/weelog.py ~/.local/share/weechat/python/
 /weelog kernel panic
 /weelog -nick alice -from 2026-01-01 kernel panic
 /weelog -here -regex (merged|closed) PR #
+/weelog -context 3 -nick alice kernel panic
 /weelog -stop
 /help weelog
 ```

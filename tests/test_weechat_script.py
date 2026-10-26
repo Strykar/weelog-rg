@@ -60,6 +60,8 @@ def test_parse_command_options_then_text(weelog):
     assert req.archives and req.system
     assert req.limit == 50
     assert req.text == "foo.*bar"
+    assert req.context == 0
+    assert weelog.parse_command("-context 2 foo").context == 2
 
 
 def test_parse_command_text_is_taken_verbatim(weelog):
@@ -85,6 +87,7 @@ def test_parse_command_here_and_stop_flags(weelog):
     "-from notadate x",
     "-limit many x",
     "-limit 0 x",
+    "-context two x",
     "-nick",
     "",
     "   ",
@@ -212,3 +215,36 @@ def test_process_cb_unreadable_files_do_not_stop_the_search(weelog):
     weelog.weelog_process_cb("", "rg", 2, "", "")  # --no-messages: nothing on stderr
     weechat.hook_process_hashtable.assert_called_once()
     assert weelog._state["search"] is s and s.rg_errors
+
+
+def test_finish_prints_context_blocks_in_order(weelog, tmp_path):
+    weechat = sys.modules["weechat"]
+    weechat.reset_mock()
+    weechat.color.side_effect = lambda name: ""
+    weechat.info_get.side_effect = lambda *a: ""
+    log = tmp_path / "irc.net.#c.weechatlog"
+    log.write_text("".join(
+        f"2026-01-02 10:00:{i:02d}\t{'-->' if i == 4 else 'alice'}\tline {i}\n" for i in range(1, 10)
+    ), encoding="utf-8")
+    s = _search(weelog, "-context 1 line", paths=(str(log),))
+    s.by_path = {str(log): ("net", "#c")}
+    s.hits = [weelog.Match(str(log), n, f"2026-01-02 10:00:{n:02d}", "alice", f"line {n}", False)
+              for n in (8, 2, 3)]
+    weelog._finish(s)
+    printed = [c.args[3] for c in weechat.prnt_date_tags.call_args_list]
+    # Block one: hits 2 and 3 merge, line 4 is an event and stays hidden; then
+    # a separator; block two: 7, hit 8, 9; then the summary line.
+    assert printed[:-1] == [
+        "alice\tnet/#c line 1",      # context
+        "alice\tnet/#c line 2",      # hit
+        "alice\tnet/#c line 3",      # hit
+        "\t\t--",
+        "alice\tnet/#c line 7",
+        "alice\tnet/#c line 8",
+        "alice\tnet/#c line 9",
+    ]
+    assert "3 hits" in printed[-1]
+    dates = [c.args[1] for c in weechat.prnt_date_tags.call_args_list]
+    assert dates[0] == weelog.hit_epoch("2026-01-02 10:00:01") and dates[3] == 0
+    weechat.color.side_effect = None
+    weechat.info_get.side_effect = None

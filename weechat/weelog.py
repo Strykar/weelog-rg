@@ -6,7 +6,7 @@
 #
 #   /weelog [-nick NICK[,NICK...]] [-net NETWORK] [-chan BUFFER] [-here]
 #           [-from YYYY-MM-DD] [-to YYYY-MM-DD] [-regex] [-case] [-events]
-#           [-archives] [-system] [-limit N] [--] TEXT
+#           [-archives] [-system] [-limit N] [-context N] [--] TEXT
 #   /weelog -stop
 #
 # Upstream: https://github.com/strykar/weelog-rg
@@ -59,7 +59,7 @@ from weelog_rg.index import (  # noqa: E402
     load_index,
     set_write_policy,
 )
-from weelog_rg.parse import parse_timestamp  # noqa: E402
+from weelog_rg.parse import context_groups, parse_timestamp  # noqa: E402
 from weelog_rg.query import Query, parse_date, select_files  # noqa: E402
 from weelog_rg.search import (  # noqa: E402
     CHUNK,
@@ -89,13 +89,14 @@ class Request:
     archives: bool = False
     system: bool = False
     limit: int = DEFAULT_LIMIT
+    context: int = 0
     stop: bool = False
     error: str | None = None
 
 
 _VALUE_OPTS = {
     "-nick": "nick", "-net": "network", "-chan": "channel",
-    "-from": "date_from", "-to": "date_to", "-limit": "limit",
+    "-from": "date_from", "-to": "date_to", "-limit": "limit", "-context": "context",
 }
 _FLAG_OPTS = {
     "-regex": "regex", "-case": "case_sensitive", "-events": "show_events",
@@ -140,6 +141,11 @@ def parse_command(args: str) -> Request:
                 req.error = f"-limit: expected a positive number, got {val!r}"
                 return req
             req.limit = int(val)
+        elif name == "context":
+            if not val.isdigit():
+                req.error = f"-context: expected a number, got {val!r}"
+                return req
+            req.context = int(val)
         else:
             setattr(req, name, val)
         pos = tokens[i + 1].end()
@@ -255,6 +261,8 @@ def _describe(req: Request) -> str:
         bits.append(f"from={req.date_from}")
     if req.date_to:
         bits.append(f"to={req.date_to}")
+    if req.context:
+        bits.append(f"context={req.context}")
     for flag, label in (
         (req.regex, "regex"), (req.case_sensitive, "case"), (req.show_events, "events"),
         (req.archives, "archives"), (req.system, "system"),
@@ -378,20 +386,11 @@ def _finish(s: Search) -> None:
         weechat.unhook(s.hook)
         s.hook = ""
     s.hits.sort(key=match_sort_key)
-    buf = s.buffer
-    dim = weechat.color("darkgray")
-    where = weechat.color("chat_buffer")
-    reset = weechat.color("reset")
-    for m in s.hits:
-        net, chan = s.by_path.get(m.path, ("?", os.path.basename(m.path)))
-        if m.is_event:
-            prefix = f"{dim}{m.who}"
-        else:
-            prefix = f"{weechat.info_get('nick_color', m.who)}{m.who}"
-        weechat.prnt_date_tags(
-            buf, hit_epoch(m.timestamp), "no_highlight,notify_none,no_log",
-            f"{prefix}\t{where}{net}/{chan}{reset} {m.message}",
-        )
+    if s.request.context > 0:
+        _print_with_context(s)
+    else:
+        for m in s.hits:
+            _print_line(s, m.path, m.timestamp, m.who, m.message, m.is_event, is_hit=True)
     elapsed = time.monotonic() - s.started
     n = len(s.hits)
     summary = f"{n} hit{'s' if n != 1 else ''} in {elapsed:.2f}s"
@@ -400,9 +399,45 @@ def _finish(s: Search) -> None:
     if s.rg_errors:
         err_lines = s.err.decode("utf-8", "replace").strip().splitlines()
         summary += f" (rg: {err_lines[-1].strip()})" if err_lines else " (rg could not read some files)"
-    weechat.prnt_date_tags(buf, 0, "no_highlight,notify_none,no_log",
+    weechat.prnt_date_tags(s.buffer, 0, "no_highlight,notify_none,no_log",
                            f"{weechat.prefix('network')}{summary}")
-    weechat.buffer_set(buf, "title", f"{SCRIPT_NAME}: {_describe(s.request)} | {summary}")
+    weechat.buffer_set(s.buffer, "title", f"{SCRIPT_NAME}: {_describe(s.request)} | {summary}")
+
+
+def _print_line(s: Search, path: str, ts: str, who: str, msg: str,
+                is_event: bool, is_hit: bool) -> None:
+    net, chan = s.by_path.get(path, ("?", os.path.basename(path)))
+    dim = weechat.color("darkgray")
+    reset = weechat.color("reset")
+    if not is_hit:
+        # Context lines are dimmed as a whole; the hit keeps its normal colours.
+        prefix = f"{dim}{who}"
+        body = f"{dim}{net}/{chan} {msg}"
+    else:
+        nick_color = dim if is_event else weechat.info_get("nick_color", who)
+        prefix = f"{nick_color}{who}"
+        body = f"{weechat.color('chat_buffer')}{net}/{chan}{reset} {msg}"
+    weechat.prnt_date_tags(s.buffer, hit_epoch(ts), "no_highlight,notify_none,no_log",
+                           f"{prefix}\t{body}")
+
+
+def _print_with_context(s: Search) -> None:
+    by_path: dict[str, list[int]] = {}
+    for m in s.hits:
+        by_path.setdefault(m.path, []).append(m.line_no)
+    blocks = []
+    for path, line_nos in by_path.items():
+        for group in context_groups(path, line_nos, s.request.context, s.query.hide_events):
+            first = next(rec for rec in group if rec[5])
+            key = match_sort_key(Match(path, first[0], first[1], first[2], first[3], first[4]))
+            blocks.append((key, path, group))
+    blocks.sort(key=lambda b: b[0])
+    sep = f"\t\t{weechat.color('darkgray')}--"
+    for i, (_key, path, group) in enumerate(blocks):
+        if i:
+            weechat.prnt_date_tags(s.buffer, 0, "no_highlight,notify_none,no_log", sep)
+        for _n, ts, who, msg, is_event, is_hit in group:
+            _print_line(s, path, ts, who, msg, is_event, is_hit)
 
 
 def weelog_process_cb(data: str, command: str, rc: int, out: str | bytes, err: str | bytes) -> int:
@@ -509,6 +544,8 @@ starts with a dash.
 -archives: include rotated .gz/.zst archives
  -system: include server, services, bouncer and monitor buffers
   -limit: stop after N hits (default 500)
+-context: show N lines above and below each hit, dimmed; hits that sit
+          close together share one block, blocks are separated by --
    -stop: cancel the running search
 
 A search needs text or -nick. Typing into the weelog buffer runs the same
@@ -518,6 +555,7 @@ Examples:
   /weelog -nick alice -from 2026-01-01 kernel panic
   /weelog -here -regex (merged|closed) PR #
   /weelog -net libera -chan #archlinux -events -- -Syu
+  /weelog -context 3 -nick alice kernel panic
 """
 
 
@@ -530,9 +568,9 @@ def main() -> None:
         SCRIPT_DESC,
         "[-nick NICK[,NICK...]] [-net NETWORK] [-chan BUFFER] [-here] "
         "[-from YYYY-MM-DD] [-to YYYY-MM-DD] [-regex] [-case] [-events] "
-        "[-archives] [-system] [-limit N] [--] TEXT || -stop",
+        "[-archives] [-system] [-limit N] [-context N] [--] TEXT || -stop",
         HELP,
-        "-nick|-net|-chan|-here|-from|-to|-regex|-case|-events|-archives|-system|-limit|-stop",
+        "-nick|-net|-chan|-here|-from|-to|-regex|-case|-events|-archives|-system|-limit|-context|-stop",
         "weelog_cmd_cb", "",
     )
 
