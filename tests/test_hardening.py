@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -150,3 +152,43 @@ def test_export_paths_are_unguessable(app_module, tmp_path, monkeypatch):
     for p in paths:
         assert p.parent == Path("/tmp")
         app_module.assert_writable(p)
+
+
+async def test_refused_export_keeps_app_running(
+    app_module, synthetic_logs, export_path, monkeypatch, debounce_immediate,
+):
+    export_path.symlink_to("/nonexistent-root/weelog-hindsight-planted.tsv")
+    monkeypatch.setattr(app_module, "new_export_path", lambda: export_path)
+    from textual.widgets import Input
+    idx, stats = app_module.load_or_build_index(synthetic_logs)
+    app = app_module.Hindsight(synthetic_logs, idx, theme="dark", index_stats=stats)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "notify", lambda msg, **kw: notes.append(str(msg)))
+    async with app.run_test(size=(200, 60)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#q-text", Input).value = "morning"
+        await pilot.pause(0.05)
+        await app.workers.wait_for_complete()
+        await app.run_action("export")
+        await pilot.pause(0.2)
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert app.is_running and app.return_code is None
+    assert any(n.startswith("Export failed") for n in notes), notes
+    assert export_path.is_symlink() and not export_path.exists()
+
+
+def test_cli_reports_refused_cache_write_without_traceback(
+    app_module, synthetic_logs, tmp_path_factory,
+):
+    cache = tmp_path_factory.mktemp("cache")
+    (cache / "weelog-hindsight").mkdir()
+    (cache / "weelog-hindsight" / "index.json").symlink_to(synthetic_logs / "index.json")
+    proc = subprocess.run(
+        [sys.executable, app_module.__file__, "--logs", str(synthetic_logs)],
+        env={**os.environ, "XDG_CACHE_HOME": str(cache)},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    out = (proc.stdout + proc.stderr).lower()
+    assert proc.returncode != 0
+    assert "refused" in out and "traceback" not in out, out

@@ -67,7 +67,7 @@ The code comments are deliberately short. The *why* lives here.
 1. The XDG cache directory (for the index JSON)
 2. `/tmp/weelog-hindsight-*.tsv` (for exports, after the user confirms)
 
-Any path that resolves outside both, or inside `--logs` (even if the user pointed `--logs` at `/tmp`), aborts the process with a readable error. `test_write_gate.py` covers the refusal branches. `test_readonly.py` checksums the logs tree before and after a real session and fails if a single byte moved.
+Any path that resolves outside both, or inside `--logs` (even if the user pointed `--logs` at `/tmp`), raises `WriteRefused`. At startup that exits with the message; in the export dialog it becomes a notification and the session continues. `test_write_gate.py` covers the refusal branches. `test_readonly.py` checksums the logs tree before and after a real session and fails if a single byte moved.
 
 ### Why ripgrep, not an index
 

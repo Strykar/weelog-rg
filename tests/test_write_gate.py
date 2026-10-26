@@ -60,7 +60,7 @@ def test_write_gate(app_module, tmp_path, monkeypatch, label, factory, ok, err):
         if ok:
             app_module.assert_writable(target)
         else:
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(app_module.WriteRefused) as exc:
                 app_module.assert_writable(target)
             assert err.lower() in str(exc.value).lower(), exc.value
     finally:
@@ -80,7 +80,7 @@ def test_write_gate_refuses_export_inside_logs(app_module, tmp_path, monkeypatch
             export_dir=Path("/tmp"),
         )
         target = Path("/tmp") / "weelog-hindsight-20260101-120000.tsv"
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(app_module.WriteRefused) as exc:
             app_module.assert_writable(target)
         assert "inside" in str(exc.value).lower() or "logs" in str(exc.value).lower(), (
             f"expected logs-overlap refusal, got: {exc.value}"

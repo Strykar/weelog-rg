@@ -404,8 +404,12 @@ def open_w(path: Path, exclusive: bool = False, **kwargs):
     return os.fdopen(os.open(path, flags, 0o600), "w", **kwargs)
 
 
+class WriteRefused(PermissionError):
+    """Raised by assert_writable; main() turns it into a clean exit."""
+
+
 def assert_writable(path: Path) -> None:
-    """Exit unless path is in the cache or a named /tmp export, and outside --logs."""
+    """Raise unless path is in the cache or a named /tmp export, and outside --logs."""
     resolved = path.resolve()
     roots = _current_allowed_roots()
     ok = False
@@ -417,7 +421,7 @@ def assert_writable(path: Path) -> None:
         except ValueError:
             continue
     if not ok:
-        sys.exit(
+        raise WriteRefused(
             f"error: refused to write {resolved}. Permitted write roots "
             f"are {[str(r) for r in roots]}. This is a cardinal guard: "
             "the tool never writes outside its cache or explicit export "
@@ -426,7 +430,7 @@ def assert_writable(path: Path) -> None:
     if _LOGS_DIR_RESOLVED is not None:
         try:
             resolved.relative_to(_LOGS_DIR_RESOLVED)
-            sys.exit(
+            raise WriteRefused(
                 f"error: refused to write {resolved} because it sits "
                 f"inside --logs ({_LOGS_DIR_RESOLVED}). Logs are "
                 "strictly read-only."
@@ -443,7 +447,7 @@ def assert_writable(path: Path) -> None:
     if not is_cache:
         name = resolved.name
         if not (name.startswith(_EXPORT_NAME_PREFIX) and name.endswith(_EXPORT_SUFFIX)):
-            sys.exit(
+            raise WriteRefused(
                 f"error: refused to write {resolved}. Export files must "
                 f"be named '{_EXPORT_NAME_PREFIX}*{_EXPORT_SUFFIX}'."
             )
@@ -1885,7 +1889,10 @@ def main() -> None:
             "overlap. Point $XDG_CACHE_HOME elsewhere and retry."
         )
 
-    index, stats = load_or_build_index(args.logs)
+    try:
+        index, stats = load_or_build_index(args.logs)
+    except WriteRefused as e:
+        sys.exit(str(e))
     if not index:
         try:
             sample = sorted(os.listdir(args.logs))[:6]
