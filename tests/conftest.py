@@ -16,6 +16,13 @@ SCRIPT_PATH = REPO_ROOT / "bin" / "weelog-rg"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_index_cache(monkeypatch, tmp_path_factory):
+    # Tests that spawn the script inherit os.environ, so without this the suite
+    # writes its synthetic index into the developer's real ~/.cache/weelog-rg.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+
+
 @pytest.fixture(scope="session")
 def app_module():
     loader = SourceFileLoader("weelog_rg_script", str(SCRIPT_PATH))
