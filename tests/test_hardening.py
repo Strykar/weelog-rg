@@ -78,3 +78,13 @@ def test_export_refuses_existing_file(app_module, export_path):
     with pytest.raises(FileExistsError):
         app_module.open_w(export_path, exclusive=True, encoding="utf-8")
     assert export_path.read_text(encoding="utf-8") == "planted"
+
+
+def test_index_skips_dated_file_with_impossible_date(app_module, tmp_path):
+    dated = tmp_path / "2026" / "net"
+    dated.mkdir(parents=True)
+    (dated / "#c.13-40.log").write_text("2026-01-02 10:00:00\tbob\thello\n", encoding="utf-8")
+    (dated / "#c.01-02.log").write_text("2026-01-02 10:00:00\tbob\thello\n", encoding="utf-8")
+    idx = app_module.build_index(tmp_path)
+    assert [e.day for e in idx] == ["2026-01-02"]
+    assert len(app_module.select_files(idx, app_module.Query(text="hello"))) == 1

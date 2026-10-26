@@ -343,6 +343,10 @@ def build_index(logs_dir: Path) -> list[LogFile]:
                     if not m:
                         continue
                     day = f"{year}-{m['md']}-{m['md2']}"
+                    try:
+                        date.fromisoformat(day)
+                    except ValueError:
+                        continue
                     out.append(LogFile(
                         path=f.path,
                         network=network,
