@@ -37,7 +37,7 @@ The filter card has two rows. The top row is for inputs you type into. The botto
 Most chips are off by default. Tick them to opt in.
 
 - **regex**: treat your Search as a regular expression. Off means plain text.
-- **case**: case-sensitive. Off uses smart case (lowercase input matches anything).
+- **case**: case-sensitive. Off (default) matches any case.
 - **events**: show join/part/quit/topic/mode lines. Off keeps the results to real conversation.
 - **archives**: also search rotated, compressed logs, both `.gz` and `.zst`. Slower than live files; turn on when you want history.
 - **system**: include the buffers that are not conversation: your ZNC bouncer's `*status` and `*controlpanel`, soju's `BouncerServ`, services such as ChanServ and NickServ, and WeeChat's own `core.weechat`, `chanmon`, `highmon` and `newsmon` buffers. The monitor buffers mirror lines from real channels, so leaving this off avoids double counting. Channels, private messages and server buffers are always searched.
@@ -125,7 +125,7 @@ Matching is anchored to the nick column, so `alice` never matches a message that
 | `alice, bob, eve`  | same with three nicks                               |
 | `  alice   bob  `  | same as `alice bob` (whitespace ignored)            |
 
-Case follows the **case** chip: off (default) is smart case, on is exact.
+Case follows the **case** chip: off (default) matches any case, on is exact.
 
 If you log with a nick prefix or suffix (`logger.file.nick_prefix` / `nick_suffix`, for example `<alice>`), the tool reads them from your `logger.conf` so the Nick field still matches and the display shows the bare nick.
 

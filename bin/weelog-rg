@@ -630,7 +630,7 @@ async def run_search(q: Query, paths: list[str]):
     pattern = q.text
     args = ["rg", "--json", "-z", "--no-messages", "-C", "0"]
     if not q.case_sensitive:
-        args.append("-S")
+        args.append("-i")
     nicks = [
         n[:NICK_INPUT_MAX]
         for n in re.split(r"[,\s]+", q.nick.strip())
@@ -895,7 +895,7 @@ HELP_SCREEN_TEXT = (
     "[b]Ctrl+Q[/b]    quit (Ctrl+C does not)\n\n"
     "[b]Chips[/b]\n"
     "  [b]regex[/b]        search text is a regular expression\n"
-    "  [b]case[/b]         case-sensitive; off means smart case\n"
+    "  [b]case[/b]         case-sensitive; off matches any case\n"
     "  [b]events[/b]       show join / part / quit / topic lines\n"
     "  [b]archives[/b]     include rotated .gz / .zst logs\n"
     "  [b]system[/b]       include ZNC, soju and services buffers and\n"
