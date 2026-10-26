@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "bin" / "weelog-rg"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(REPO_ROOT))
 
 
 @pytest.fixture(autouse=True)
