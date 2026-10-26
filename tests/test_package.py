@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BASE = ["rg", "--json", "-z", "--no-messages", "-C", "0"]
 CORE_MODULES = (
     "weelog_rg", "weelog_rg.parse", "weelog_rg.index", "weelog_rg.query",
-    "weelog_rg.search",
+    "weelog_rg.search", "weelog_rg.cli",
 )
 
 
