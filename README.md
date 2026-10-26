@@ -134,7 +134,7 @@ logs. Typing into it runs `/weelog` again with what you typed.
 
 ## Roadmap
 
-See [TODO.md](TODO.md) for upcoming work (non-interactive CLI mode, reusable-package refactor).
+See [TODO.md](TODO.md) for what is still open (TUI shim over the package, weechat.org submission, jump to the live buffer).
 
 ## Contributing
 
