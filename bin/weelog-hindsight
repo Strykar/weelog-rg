@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -388,6 +389,12 @@ def _current_allowed_roots() -> list[Path]:
         if r not in roots:
             roots.append(r)
     return roots
+
+
+def new_export_path() -> Path:
+    # /tmp is shared, so the name must not be guessable from the clock.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path("/tmp") / f"{_EXPORT_NAME_PREFIX}{stamp}-{secrets.token_hex(4)}{_EXPORT_SUFFIX}"
 
 
 def open_w(path: Path, exclusive: bool = False, **kwargs):
@@ -1720,8 +1727,7 @@ class Hindsight(App):
         if not self._matches:
             self.notify("Nothing to export.", severity="warning")
             return
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out = Path("/tmp") / f"weelog-hindsight-{stamp}.tsv"
+        out = new_export_path()
 
         def _do_export(confirm: bool) -> None:
             if not confirm:

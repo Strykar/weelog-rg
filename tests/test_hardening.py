@@ -141,3 +141,12 @@ async def test_non_utf8_filenames_are_searchable(
         dt = app.query_one("#results", DataTable)
         assert dt.row_count == 2
         assert {str(dt.get_row_at(i)[2]) for i in range(2)} == {"#ch�", "#old�"}
+
+
+def test_export_paths_are_unguessable(app_module, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    paths = [app_module.new_export_path() for _ in range(5)]
+    assert len(set(paths)) == 5
+    for p in paths:
+        assert p.parent == Path("/tmp")
+        app_module.assert_writable(p)

@@ -55,7 +55,7 @@ Follows the XDG Base Directory spec:
 | What          | Location                                        |
 | ------------- | ----------------------------------------------- |
 | Index cache   | `$XDG_CACHE_HOME/weelog-hindsight/index.json`   |
-| Exports       | `/tmp/weelog-hindsight-<timestamp>.tsv` (on demand, with confirmation) |
+| Exports       | `/tmp/weelog-hindsight-<timestamp>-<random>.tsv` (on demand, with confirmation) |
 
 No config file yet.
 
