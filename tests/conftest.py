@@ -11,18 +11,18 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT_PATH = REPO_ROOT / "bin" / "weelog-hindsight"
+SCRIPT_PATH = REPO_ROOT / "bin" / "weelog-rg"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 @pytest.fixture(scope="session")
 def app_module():
-    loader = SourceFileLoader("weelog_hindsight_script", str(SCRIPT_PATH))
-    spec = importlib.util.spec_from_loader("weelog_hindsight_script", loader)
+    loader = SourceFileLoader("weelog_rg_script", str(SCRIPT_PATH))
+    spec = importlib.util.spec_from_loader("weelog_rg_script", loader)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["weelog_hindsight_script"] = mod
+    sys.modules["weelog_rg_script"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -117,4 +117,4 @@ def debounce_immediate(app_module):
     import _fuzz_lib
     original = _fuzz_lib.patch_debounce_to_immediate(app_module)
     yield
-    app_module.Hindsight._schedule_search = original
+    app_module.WeelogRg._schedule_search = original

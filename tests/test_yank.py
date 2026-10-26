@@ -14,7 +14,7 @@ async def test_yank_deny_keeps_clipboard_empty(
 
     from textual.widgets import DataTable, Input
     index, stats = app_module.load_or_build_index(synthetic_logs)
-    app = app_module.Hindsight(synthetic_logs, index, theme="dark",
+    app = app_module.WeelogRg(synthetic_logs, index, theme="dark",
                                index_stats=stats)
     _patch_clipboard(app, calls)
     async with app.run_test(size=(180, 50)) as pilot:
@@ -40,7 +40,7 @@ async def test_yank_accept_then_cursor(
 
     from textual.widgets import DataTable, Input
     index, stats = app_module.load_or_build_index(synthetic_logs)
-    app = app_module.Hindsight(synthetic_logs, index, theme="dark",
+    app = app_module.WeelogRg(synthetic_logs, index, theme="dark",
                                index_stats=stats)
     _patch_clipboard(app, calls)
     async with app.run_test(size=(180, 50)) as pilot:
@@ -80,7 +80,7 @@ async def test_yank_context_copies_window(
 
     from textual.widgets import Input
     index, stats = app_module.load_or_build_index(synthetic_logs)
-    app = app_module.Hindsight(synthetic_logs, index, theme="dark",
+    app = app_module.WeelogRg(synthetic_logs, index, theme="dark",
                                index_stats=stats)
     _patch_clipboard(app, calls)
     async with app.run_test(size=(180, 50)) as pilot:

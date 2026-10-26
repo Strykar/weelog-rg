@@ -25,7 +25,7 @@ async def _exercise(app_module, logs_dir: Path):
     from textual.widgets import Checkbox, DataTable, Input, Tree
 
     index, stats = app_module.load_or_build_index(logs_dir)
-    app = app_module.Hindsight(logs_dir, index, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(logs_dir, index, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
 
@@ -45,7 +45,7 @@ async def _exercise(app_module, logs_dir: Path):
         app.query_one("#q-text", Input).value = "morning"
         await pilot.pause(0.05)
         await app.workers.wait_for_complete()
-        export_before = set(Path("/tmp").glob("weelog-hindsight-*.tsv"))
+        export_before = set(Path("/tmp").glob("weelog-rg-*.tsv"))
         assert app.query_one("#results", DataTable).row_count > 0, (
             "search for 'morning' should yield results"
         )
@@ -53,7 +53,7 @@ async def _exercise(app_module, logs_dir: Path):
         await pilot.pause(0.2)
         await pilot.press("enter")
         await pilot.pause(0.4)
-        export_after = set(Path("/tmp").glob("weelog-hindsight-*.tsv"))
+        export_after = set(Path("/tmp").glob("weelog-rg-*.tsv"))
         new_exports = export_after - export_before
         assert new_exports, "export action should have written a .tsv file"
         for f in new_exports:

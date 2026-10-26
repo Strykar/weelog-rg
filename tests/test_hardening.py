@@ -31,7 +31,7 @@ async def test_buffer_names_are_not_markup(
     )
     from textual.widgets import Input, Static, Tree
     idx, stats = app_module.load_or_build_index(tmp_path)
-    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(tmp_path, idx, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
         tree = app.query_one("#tree", Tree)
@@ -64,7 +64,7 @@ async def test_relative_logs_dir_starting_with_dash(app_module, tmp_path, monkey
 @pytest.fixture
 def export_path(app_module, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    p = Path("/tmp") / f"weelog-hindsight-test-{uuid.uuid4().hex}.tsv"
+    p = Path("/tmp") / f"weelog-rg-test-{uuid.uuid4().hex}.tsv"
     yield p
     if p.exists() or p.is_symlink():
         p.unlink()
@@ -107,7 +107,7 @@ async def test_buffer_names_are_not_terminal_controls(
     )
     from textual.widgets import DataTable, Input, Static, Tree
     idx, stats = app_module.load_or_build_index(tmp_path)
-    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(tmp_path, idx, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
         net_node = app.query_one("#tree", Tree).root.children[0]
@@ -134,7 +134,7 @@ async def test_non_utf8_filenames_are_searchable(
     (tmp_path / os.fsdecode(b"irc.net.#old\xff.weechatlog")).write_text(line, encoding="utf-8")
     from textual.widgets import DataTable, Input
     idx, stats = app_module.load_or_build_index(tmp_path)
-    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(tmp_path, idx, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
         app.query_one("#q-text", Input).value = "hello"
@@ -158,11 +158,11 @@ def test_export_paths_are_unguessable(app_module, tmp_path, monkeypatch):
 async def test_refused_export_keeps_app_running(
     app_module, synthetic_logs, export_path, monkeypatch, debounce_immediate,
 ):
-    export_path.symlink_to("/nonexistent-root/weelog-hindsight-planted.tsv")
+    export_path.symlink_to("/nonexistent-root/weelog-rg-planted.tsv")
     monkeypatch.setattr(app_module, "new_export_path", lambda: export_path)
     from textual.widgets import Input
     idx, stats = app_module.load_or_build_index(synthetic_logs)
-    app = app_module.Hindsight(synthetic_logs, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(synthetic_logs, idx, theme="dark", index_stats=stats)
     notes: list[str] = []
     monkeypatch.setattr(app, "notify", lambda msg, **kw: notes.append(str(msg)))
     async with app.run_test(size=(200, 60)) as pilot:
@@ -183,8 +183,8 @@ def test_cli_reports_refused_cache_write_without_traceback(
     app_module, synthetic_logs, tmp_path_factory,
 ):
     cache = tmp_path_factory.mktemp("cache")
-    (cache / "weelog-hindsight").mkdir()
-    (cache / "weelog-hindsight" / "index.json").symlink_to(synthetic_logs / "index.json")
+    (cache / "weelog-rg").mkdir()
+    (cache / "weelog-rg" / "index.json").symlink_to(synthetic_logs / "index.json")
     proc = subprocess.run(
         [sys.executable, app_module.__file__, "--logs", str(synthetic_logs)],
         env={**os.environ, "XDG_CACHE_HOME": str(cache)},
@@ -198,7 +198,7 @@ def test_cli_reports_refused_cache_write_without_traceback(
 async def _export_rows(app_module, pilot_logs, export_path, query):
     from textual.widgets import Input
     idx, stats = app_module.load_or_build_index(pilot_logs)
-    app = app_module.Hindsight(pilot_logs, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(pilot_logs, idx, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
         app.query_one("#q-text", Input).value = query

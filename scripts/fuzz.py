@@ -23,24 +23,24 @@ import _fuzz_lib  # noqa: E402
 
 
 def load_app_module(path: Path):
-    loader = SourceFileLoader("hindsight_app", str(path))
-    spec = importlib.util.spec_from_loader("hindsight_app", loader)
+    loader = SourceFileLoader("weelog_rg_app", str(path))
+    spec = importlib.util.spec_from_loader("weelog_rg_app", loader)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["hindsight_app"] = mod
+    sys.modules["weelog_rg_app"] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
 async def run(logs_dir: Path, iterations: int, seed: int) -> int:
     random.seed(seed)
-    target = SCRIPT_DIR.parent / "bin" / "weelog-hindsight"
+    target = SCRIPT_DIR.parent / "bin" / "weelog-rg"
     if not target.exists():
         import shutil
-        found = shutil.which("weelog-hindsight")
+        found = shutil.which("weelog-rg")
         if not found:
             sys.exit(
-                f"error: could not find bin/weelog-hindsight relative to "
+                f"error: could not find bin/weelog-rg relative to "
                 f"{SCRIPT_DIR} or on $PATH"
             )
         target = Path(found)
@@ -51,7 +51,7 @@ async def run(logs_dir: Path, iterations: int, seed: int) -> int:
     _fuzz_lib.patch_debounce_to_immediate(mod)
 
     index, stats = mod.load_or_build_index(logs_dir)
-    app = mod.Hindsight(logs_dir, index, theme="dark", index_stats=stats)
+    app = mod.WeelogRg(logs_dir, index, theme="dark", index_stats=stats)
 
     violations: list[_fuzz_lib.Violation] = []
     errors: list[str] = []

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -272,7 +272,7 @@ wheels = [
 ]
 
 [[package]]
-name = "weelog-hindsight"
+name = "weelog-rg"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

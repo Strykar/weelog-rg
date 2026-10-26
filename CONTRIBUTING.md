@@ -6,7 +6,7 @@ Thanks for taking an interest. This is a single-file script. Don't be shy.
 
 Before opening a PR:
 
-- [ ] `ruff check bin/weelog-hindsight tests` is clean
+- [ ] `ruff check bin/weelog-rg tests` is clean
 - [ ] `pytest` is green
 - [ ] If you touched the TUI, run `pytest tests/test_fuzz.py` with two or three different `--seed` values
 
@@ -16,7 +16,7 @@ You'll need Python ≥ 3.12, `ripgrep`, and either `uv` or a venv with `textual>
 
 ```sh
 git clone <repo>
-cd weelog-hindsight
+cd weelog-rg
 python -m venv .venv
 .venv/bin/pip install textual 'rich>=13' pytest ruff
 .venv/bin/pytest
@@ -35,7 +35,7 @@ uv run pytest
 The whole tool is one executable script under `bin/`. Three things worth flagging up front:
 
 1. **The PEP 723 shebang is load-bearing.** `#!/usr/bin/env -S uv run --script --quiet` is what makes the script a drop-in, so users don't need to create a venv. The `--script` flag matters; without it `uv` recursively re-invokes itself.
-2. **The logs directory is read-only.** Every filesystem write goes through `assert_writable(path)`. The allowlist covers the XDG cache and `/tmp/weelog-hindsight-*.tsv` exports. If you find yourself reaching for `open("w")` or `write_text` directly, please route it through the gate. The test suite (`tests/test_readonly.py`) checks this, but a heads-up first saves a review round trip.
+2. **The logs directory is read-only.** Every filesystem write goes through `assert_writable(path)`. The allowlist covers the XDG cache and `/tmp/weelog-rg-*.tsv` exports. If you find yourself reaching for `open("w")` or `write_text` directly, please route it through the gate. The test suite (`tests/test_readonly.py`) checks this, but a heads-up first saves a review round trip.
 3. **`ripgrep` is the search engine.** This approach searches multi-gigabyte log directories in well under a second on a modern NVMe SSD, more than most humans accumulate in a lifetime. A persistent index would add maintenance and staleness without buying us anything noticeable, so let's not go there.
 
 A split into a proper package is tracked in `TODO.md` item 2. Until that lands, new logic stays in the single file.
@@ -65,7 +65,7 @@ The code comments are deliberately short. The *why* lives here.
 `assert_writable(path)` is the only place we write to disk. It permits two locations and nothing else:
 
 1. The XDG cache directory (for the index JSON)
-2. `/tmp/weelog-hindsight-*.tsv` (for exports, after the user confirms)
+2. `/tmp/weelog-rg-*.tsv` (for exports, after the user confirms)
 
 Any path that resolves outside both, or inside `--logs` (even if the user pointed `--logs` at `/tmp`), raises `WriteRefused`. At startup that exits with the message; in the export dialog it becomes a notification and the session continues. `test_write_gate.py` covers the refusal branches. `test_readonly.py` checksums the logs tree before and after a real session and fails if a single byte moved.
 
@@ -107,7 +107,7 @@ Private buffers are named after the remote nick. When the *local* user is the sp
 
 ### Index cache
 
-Lives at `$XDG_CACHE_HOME/weelog-hindsight/index.json`. The key is a SHA-256 of the logs directory path plus the name + mtime + size of every top-level entry, plus the name + mtime of each network subdirectory under the year folders. On the common Linux filesystems (ext4, xfs, btrfs) this means almost any change inside the logs tree invalidates the cache, since adding a file bumps its parent directory's mtime. Treat the cache as pure derived state; any read failure rebuilds from disk.
+Lives at `$XDG_CACHE_HOME/weelog-rg/index.json`. The key is a SHA-256 of the logs directory path plus the name + mtime + size of every top-level entry, plus the name + mtime of each network subdirectory under the year folders. On the common Linux filesystems (ext4, xfs, btrfs) this means almost any change inside the logs tree invalidates the cache, since adding a file bumps its parent directory's mtime. Treat the cache as pure derived state; any read failure rebuilds from disk.
 
 ### Responsive sizing
 

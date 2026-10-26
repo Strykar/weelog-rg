@@ -10,10 +10,10 @@ set logs $demo/.local/share/weechat/logs
 exec rm -rf $demo
 exec mkdir -p $logs $demo/.cache $demo/.config $demo/bin
 exec python3 -I $repo/demo/make-logs.py $logs
-set fh [open $demo/bin/weelog-hindsight w]
-puts $fh "#!/bin/sh\nexec $repo/.venv/bin/python $repo/bin/weelog-hindsight \"\$@\""
+set fh [open $demo/bin/weelog-rg w]
+puts $fh "#!/bin/sh\nexec $repo/.venv/bin/python $repo/bin/weelog-rg \"\$@\""
 close $fh
-exec chmod +x $demo/bin/weelog-hindsight
+exec chmod +x $demo/bin/weelog-rg
 set fh [open $demo/.bashrc w]
 puts $fh {unset PROMPT_COMMAND; cd ~; PS1="\[\e[1;32m\]~\[\e[0m\] \$ "}
 close $fh
@@ -30,7 +30,7 @@ set env(LESS) -R
 set timeout 30
 set send_human {.06 .12 1 .03 .25}
 spawn asciinema rec --overwrite --window-size 140x50 -i 2 \
-    -t "weelog-hindsight demo" -c "bash --noprofile --rcfile $demo/.bashrc -i" $out
+    -t "weelog-rg demo" -c "bash --noprofile --rcfile $demo/.bashrc -i" $out
 expect "$ "
 
 proc type {s} { send -h -- $s }
@@ -53,7 +53,7 @@ set CTRL_P "\020"
 set CTRL_Q "\021"
 
 wait 1
-type "weelog-hindsight --logs ~/.local/share/weechat/logs"
+type "weelog-rg --logs ~/.local/share/weechat/logs"
 wait 0.6
 key $ENTER 4
 

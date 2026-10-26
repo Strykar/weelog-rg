@@ -21,7 +21,7 @@ def _run_script(app_module, args: list[str], env_extra: dict | None = None):
 def test_weelog_dir_fallback(app_module, synthetic_logs, monkeypatch):
     import argparse
     monkeypatch.setenv("WEELOG_DIR", str(synthetic_logs))
-    monkeypatch.setattr("sys.argv", ["weelog-hindsight"])
+    monkeypatch.setattr("sys.argv", ["weelog-rg"])
     ap = argparse.ArgumentParser()
     ap.add_argument("--logs", type=Path, default=None)
     args = ap.parse_args([])

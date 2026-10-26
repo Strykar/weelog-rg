@@ -24,9 +24,9 @@ High-level roadmap. Issues / PRs welcome.
 Add a CLI surface for scripting, pipelines, and quick one-liners. No TUI, no Textual, plain text output to stdout.
 
 ```
-weelog-hindsight --logs DIR --user alice --user bob --search "topic word"
-weelog-hindsight --logs DIR --user alice --from 2026-01-01 --to 2026-03-01
-weelog-hindsight --logs DIR --search foo --format json
+weelog-rg --logs DIR --user alice --user bob --search "topic word"
+weelog-rg --logs DIR --user alice --from 2026-01-01 --to 2026-03-01
+weelog-rg --logs DIR --search foo --format json
 ```
 
 Shape:
@@ -47,7 +47,7 @@ Lift the logic out of the single-file script so a future WeeChat plugin (in-proc
 Suggested package layout:
 
 ```
-weelog_hindsight/
+weelog_rg/
 ├── __init__.py          # exports public API surface
 ├── index.py             # LogFile, build_index, cache, mask parsing
 ├── query.py             # Query dataclass, date/nick/scope helpers
@@ -56,7 +56,7 @@ weelog_hindsight/
 ├── render.py            # nick_color, render_message, format_relative
 ├── terminal.py          # terminal_autolinks_urls, OSC 52, OSC 8 helpers
 ├── tui/
-│   ├── app.py           # Hindsight(App) + ConfirmExport(ModalScreen)
+│   ├── app.py           # WeelogRg(App) + ConfirmExport(ModalScreen)
 │   └── ...
 └── cli.py               # non-interactive surface from item 1
 ```
@@ -65,7 +65,7 @@ Constraints:
 
 - Core modules (`index`, `query`, `search`, `parse`) **must not import textual or rich**. Keeping them free of UI deps is what lets a WeeChat plugin running inside the weechat process reuse them.
 - `render.py` may optionally return Rich renderables but should also expose plain-string equivalents.
-- The script `bin/weelog-hindsight` becomes a thin shim that imports `weelog_hindsight.tui.app:main`.
+- The script `bin/weelog-rg` becomes a thin shim that imports `weelog_rg.tui.app:main`.
 - Keep the PEP 723 shebang story working for drop-in users.
 
 A WeeChat Python plugin would then be ~50 lines importing `index` + `search` to serve queries from inside the running client, reusing the exact same parser and mask handling as the external TUI.

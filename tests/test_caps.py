@@ -22,7 +22,7 @@ async def test_500_cap_surfaces_truncated_marker(
 
     from textual.widgets import DataTable, Input, Static
     idx, stats = app_module.load_or_build_index(tmp_path)
-    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    app = app_module.WeelogRg(tmp_path, idx, theme="dark", index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.2)
         app.query_one("#q-text", Input).value = "hit"

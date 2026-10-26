@@ -15,7 +15,7 @@ SEEDS = (1, 42)
 async def _run_seed(app_module, synthetic_logs, seed: int, iterations: int):
     random.seed(seed)
     index, stats = app_module.load_or_build_index(synthetic_logs)
-    app = app_module.Hindsight(synthetic_logs, index, theme="dark",
+    app = app_module.WeelogRg(synthetic_logs, index, theme="dark",
                                index_stats=stats)
 
     violations: list[_fuzz_lib.Violation] = []

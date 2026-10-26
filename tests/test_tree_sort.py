@@ -30,7 +30,7 @@ def test_tree_sorts_alphabetically(
     async def run():
         from textual.widgets import Tree
         idx, stats = app_module.load_or_build_index(tmp_path)
-        app = app_module.Hindsight(tmp_path, idx, theme="dark",
+        app = app_module.WeelogRg(tmp_path, idx, theme="dark",
                                    index_stats=stats)
         async with app.run_test(size=(200, 60)) as pilot:
             await pilot.pause(0.3)

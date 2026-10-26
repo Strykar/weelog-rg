@@ -1,5 +1,5 @@
 [project]
-name = "weelog-hindsight"
+name = "weelog-rg"
 version = "0.1.0"
 description = "Fast TUI search over WeeChat IRC logs, powered by ripgrep."
 readme = "README.md"
@@ -33,8 +33,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/strykar/weelog-hindsight"
-Issues = "https://github.com/strykar/weelog-hindsight/issues"
+Homepage = "https://github.com/strykar/weelog-rg"
+Issues = "https://github.com/strykar/weelog-rg/issues"
 
 [tool.pytest.ini_options]
 minversion = "8.0"

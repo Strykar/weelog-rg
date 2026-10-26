@@ -1,4 +1,4 @@
-# weelog-hindsight
+# weelog-rg
 
 Fast, keyboard-driven TUI for reading and searching every kind of WeeChat log: channels, PMs, server buffers, services (ChanServ, NickServ, ...), ZNC bouncer modules, and WeeChat's own monitor and core buffers. Both the legacy flat layout (`plugin.name.weechatlog[.N][.gz]`) and the dated `YYYY/network/buffer.MM-DD.log` hierarchy.
 
@@ -11,9 +11,9 @@ Index years of history once, then search gigabytes of it in well under a second 
 **Recommended path (uses [`uv`](https://github.com/astral-sh/uv)):**
 
 ```sh
-curl -L https://raw.githubusercontent.com/strykar/weelog-hindsight/main/bin/weelog-hindsight \
-    -o ~/.local/bin/weelog-hindsight
-chmod +x ~/.local/bin/weelog-hindsight
+curl -L https://raw.githubusercontent.com/strykar/weelog-rg/main/bin/weelog-rg \
+    -o ~/.local/bin/weelog-rg
+chmod +x ~/.local/bin/weelog-rg
 ```
 
 The shebang handles the Python environment. That's it.
@@ -21,10 +21,10 @@ The shebang handles the Python environment. That's it.
 **Manual venv** (if you can't use `uv`):
 
 ```sh
-git clone https://github.com/strykar/weelog-hindsight
-cd weelog-hindsight
+git clone https://github.com/strykar/weelog-rg
+cd weelog-rg
 python -m venv .venv && .venv/bin/pip install 'textual>=0.80' 'rich>=13'
-.venv/bin/python bin/weelog-hindsight --logs ~/.local/share/weechat/logs
+.venv/bin/python bin/weelog-rg --logs ~/.local/share/weechat/logs
 ```
 
 You'll also need [ripgrep](https://github.com/BurntSushi/ripgrep) on `$PATH`
@@ -34,13 +34,13 @@ The PEP 723 shebang requires `uv >= 0.4`.
 ## Usage
 
 ```sh
-weelog-hindsight --logs ~/.local/share/weechat/logs
-weelog-hindsight --logs DIR --theme gruvbox
-weelog-hindsight --help
+weelog-rg --logs ~/.local/share/weechat/logs
+weelog-rg --logs DIR --theme gruvbox
+weelog-rg --help
 
 # Or set the env var once and skip --logs:
 export WEELOG_DIR=~/.local/share/weechat/logs
-weelog-hindsight
+weelog-rg
 ```
 
 `--logs` takes priority over `$WEELOG_DIR`. If neither is set, the tool
@@ -54,8 +54,8 @@ Follows the XDG Base Directory spec:
 
 | What          | Location                                        |
 | ------------- | ----------------------------------------------- |
-| Index cache   | `$XDG_CACHE_HOME/weelog-hindsight/index.json`   |
-| Exports       | `/tmp/weelog-hindsight-<timestamp>-<random>.tsv` (on demand, with confirmation) |
+| Index cache   | `$XDG_CACHE_HOME/weelog-rg/index.json`   |
+| Exports       | `/tmp/weelog-rg-<timestamp>-<random>.tsv` (on demand, with confirmation) |
 
 No config file yet.
 

@@ -67,7 +67,7 @@ Most chips are off by default. Tick them to opt in.
 
 ## Minimum input for a search to run
 
-Hindsight will not scan logs on every keystroke. A search is only dispatched when you have given it at least one of:
+weelog-rg will not scan logs on every keystroke. A search is only dispatched when you have given it at least one of:
 
 - **Query text** (any body substring or regex), or
 - **a Nick** (anchored, matches that nick's own lines).
@@ -162,11 +162,11 @@ Limits: no hard cap on nick count. A huge list eventually runs into ripgrep's re
 ## Themes
 
 ```sh
-weelog-hindsight --logs DIR --theme auto     # default; reads $COLORFGBG
-weelog-hindsight --logs DIR --theme dark
-weelog-hindsight --logs DIR --theme light
-weelog-hindsight --logs DIR --theme gruvbox
-weelog-hindsight --logs DIR --theme catppuccin-mocha
+weelog-rg --logs DIR --theme auto     # default; reads $COLORFGBG
+weelog-rg --logs DIR --theme dark
+weelog-rg --logs DIR --theme light
+weelog-rg --logs DIR --theme gruvbox
+weelog-rg --logs DIR --theme catppuccin-mocha
 ```
 
 Any Textual-supported theme name works; `Ctrl+P` lets you switch live.

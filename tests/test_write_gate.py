@@ -6,12 +6,12 @@ import pytest
 
 
 def _allowed_cache(_app, tmp_path, _logs):
-    target = tmp_path / "weelog-hindsight" / "index.json"
+    target = tmp_path / "weelog-rg" / "index.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 def _allowed_export(_app, _tmp, _logs):
-    return Path("/tmp") / "weelog-hindsight-20260101-120000.tsv"
+    return Path("/tmp") / "weelog-rg-20260101-120000.tsv"
 
 def _refused_random(_app, _tmp, _logs):
     return Path("/etc/passwd")
@@ -20,18 +20,18 @@ def _refused_export_wrong_prefix(_app, _tmp, _logs):
     return Path("/tmp/passwd")
 
 def _refused_export_wrong_suffix(_app, _tmp, _logs):
-    return Path("/tmp/weelog-hindsight-x.exe")
+    return Path("/tmp/weelog-rg-x.exe")
 
 def _refused_outside_via_traversal(_app, _tmp, _logs):
-    return Path("/tmp/../etc/weelog-hindsight-x.tsv")
+    return Path("/tmp/../etc/weelog-rg-x.tsv")
 
 def _refused_symlink_to_logs(_app, tmp_path, _logs):
     logs_dir = tmp_path / "fake-logs"
     logs_dir.mkdir()
-    link = tmp_path / "weelog-hindsight" / "sneaky.json"
+    link = tmp_path / "weelog-rg" / "sneaky.json"
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(logs_dir / "index.json")
-    _app._set_write_policy(logs_dir, tmp_path / "weelog-hindsight", Path("/tmp"))
+    _app._set_write_policy(logs_dir, tmp_path / "weelog-rg", Path("/tmp"))
     return link
 
 
@@ -79,7 +79,7 @@ def test_write_gate_refuses_export_inside_logs(app_module, tmp_path, monkeypatch
             cache_dir=tmp_path / "cache",
             export_dir=Path("/tmp"),
         )
-        target = Path("/tmp") / "weelog-hindsight-20260101-120000.tsv"
+        target = Path("/tmp") / "weelog-rg-20260101-120000.tsv"
         with pytest.raises(app_module.WriteRefused) as exc:
             app_module.assert_writable(target)
         assert "inside" in str(exc.value).lower() or "logs" in str(exc.value).lower(), (

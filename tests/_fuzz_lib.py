@@ -39,7 +39,7 @@ def _subseq(needle: str, hay: str) -> bool:
 
 
 def patch_debounce_to_immediate(app_module):
-    original = app_module.Hindsight._schedule_search
+    original = app_module.WeelogRg._schedule_search
 
     def _immediate(self) -> None:
         if self._debounce_timer is not None:
@@ -47,7 +47,7 @@ def patch_debounce_to_immediate(app_module):
             self._debounce_timer = None
         self._run()
 
-    app_module.Hindsight._schedule_search = _immediate
+    app_module.WeelogRg._schedule_search = _immediate
     return original
 
 

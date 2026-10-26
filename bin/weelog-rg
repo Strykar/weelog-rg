@@ -370,12 +370,12 @@ def build_index(logs_dir: Path) -> list[LogFile]:
 
 def cache_path() -> Path:
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return base / "weelog-hindsight" / "index.json"
+    return base / "weelog-rg" / "index.json"
 
 
 _ALLOWED_WRITE_ROOTS: list[Path] = []
 _LOGS_DIR_RESOLVED: Path | None = None
-_EXPORT_NAME_PREFIX = "weelog-hindsight-"
+_EXPORT_NAME_PREFIX = "weelog-rg-"
 _EXPORT_SUFFIX = ".tsv"
 
 
@@ -894,7 +894,7 @@ class HelpScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
             yield Static(Text.from_markup(
-                "[b]Hindsight[/b] key bindings\n\n"
+                "[b]weelog-rg[/b] key bindings\n\n"
                 "[b]/[/b]          focus search bar\n"
                 "[b]Ctrl+L[/b]    focus tree\n"
                 "[b]F2[/b]        toggle filter bar\n"
@@ -925,7 +925,7 @@ class HelpScreen(ModalScreen):
         self.app.pop_screen()
 
 
-class HindsightCommands(Provider):
+class WeelogRgCommands(Provider):
 
     async def search(self, query: str):
         commands = self._commands()
@@ -973,10 +973,10 @@ class HindsightCommands(Provider):
         ]
 
 
-class Hindsight(App):
-    TITLE = "Hindsight"
+class WeelogRg(App):
+    TITLE = "weelog-rg"
     SUB_TITLE = "weechat log search"
-    COMMANDS = App.COMMANDS | {HindsightCommands}
+    COMMANDS = App.COMMANDS | {WeelogRgCommands}
     CSS = """
     Screen { layout: vertical; }
 
@@ -1829,9 +1829,9 @@ don't drive.
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        prog="weelog-hindsight",
+        prog="weelog-rg",
         description=(
-            "weelog-hindsight (Hindsight). A TUI search over a weechat logs "
+            "weelog-rg. A TUI search over a weechat logs "
             "directory. Indexes "
             "both the legacy flat layout (plugin.name.weechatlog[.N][.gz]) and "
             "the dated YYYY/<network>/<buffer>.MM-DD.log hierarchy; full-text "
@@ -1921,7 +1921,7 @@ def main() -> None:
             f"or a 'YYYY/<network>/<buffer>.MM-DD.log' tree.\n"
             f"  default weechat logs path: {default_hint}"
         )
-    Hindsight(args.logs, index, theme=args.theme, index_stats=stats).run()
+    WeelogRg(args.logs, index, theme=args.theme, index_stats=stats).run()
 
 
 if __name__ == "__main__":
