@@ -49,6 +49,29 @@ print("ok")
     assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
 
 
+def test_built_script_carries_no_dead_code(tmp_path):
+    import ast
+    out = tmp_path / "weelog.py"
+    subprocess.run([sys.executable, str(BUILD), str(out)], check=True, capture_output=True)
+    src = out.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                assert a.name == "weechat" or a.name.split(".")[0] in names, f"unused import {a.name}"
+        elif isinstance(node, ast.ImportFrom) and node.module != "__future__":
+            for a in node.names:
+                assert a.name in names, f"unused import {a.name} from {node.module}"
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            outside = {n.id for other in tree.body if other is not node
+                       for n in ast.walk(other) if isinstance(n, ast.Name)}
+            assert node.name in outside or node.name in strings, f"nothing uses {node.name}"
+    assert "import asyncio" not in src and "import sys" not in src
+    assert "def run_search" not in src and "def load_or_build_index" not in src
+
+
 def test_build_is_deterministic(tmp_path):
     a, b = tmp_path / "a.py", tmp_path / "b.py"
     subprocess.run([sys.executable, str(BUILD), str(a)], check=True, capture_output=True)
