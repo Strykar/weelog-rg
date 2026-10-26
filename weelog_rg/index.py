@@ -207,11 +207,7 @@ def assert_writable(path: Path) -> None:
 
 
 def load_index(logs_dir: Path) -> tuple[list[LogFile], str, bool]:
-    """The index from the cache when its key still matches, else a fresh scan.
-
-    Returns (entries, key, cache_hit). The key is cheap to recompute, so a
-    long-running caller can keep the entries and reload only when it changes.
-    """
+    """Cached entries while the key matches, else a fresh scan. Returns (entries, key, cache_hit)."""
     key = index_key(logs_dir)
     cp = cache_path()
     cache_hit = False

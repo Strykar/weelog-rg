@@ -113,8 +113,7 @@ def test_context_text(synthetic_logs, tmp_path):
     r = run_cli(["-s", "good morning", "--context", "1"], synthetic_logs, tmp_path)
     assert r.returncode == 0
     out = r.stdout.splitlines()
-    # Events are hidden by default, so the join above alice is skipped and the
-    # topic line is skipped; one hit, context shows the hit marked plus bob below.
+    # Events hidden: the join and topic above alice are skipped, bob below shows.
     assert out[0].startswith("2026-01-02 10:00:30  example-network/#channel-one  <alice> good morning")
     assert any(ln.startswith(">> 10:00:30") and "good morning" in ln for ln in out)
     assert any(ln.startswith("   10:01:00") and "<bob>" in ln for ln in out)
@@ -225,9 +224,7 @@ def test_broken_pipe_is_quiet(synthetic_logs, tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "WEELOG_DIR")}
     env["XDG_CACHE_HOME"] = str(tmp_path.parent / f"{tmp_path.name}-cache")
     env["PYTHONPATH"] = str(REPO_ROOT)
-    # Pipe into a reader that closes immediately. 20k synthetic hits are not needed:
-    # the writer only sees EPIPE if it writes after the reader closed, so make the
-    # reader close first by running `head -c0` and feeding it a sizeable stream.
+    # head -c 0 closes at once; the writer must then die on EPIPE like grep, no traceback.
     dated = tmp_path / "logs" / "2026" / "net"
     dated.mkdir(parents=True)
     (dated / "#c.01-02.log").write_text(

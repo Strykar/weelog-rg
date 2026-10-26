@@ -25,8 +25,7 @@ def test_built_script_is_self_contained(tmp_path):
     assert first_code == "from __future__ import annotations"
     assert 'weechat.register("weelog"' in src or "weechat.register(SCRIPT_NAME" in src
 
-    # Load it where the package cannot be found (-I: no cwd, no repo on sys.path),
-    # with a stub weechat module, and exercise code from every inlined module.
+    # -I keeps cwd and the repo off sys.path, so a leftover package import would fail.
     stub = tmp_path / "stub"
     stub.mkdir()
     (stub / "weechat.py").write_text(

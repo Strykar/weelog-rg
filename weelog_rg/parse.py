@@ -157,12 +157,7 @@ def parse_line(raw: str) -> tuple[str, str, str, bool]:
 def context_groups(
     path: str, line_nos: list[int], span: int, hide_events: bool,
 ) -> list[list[tuple[int, str, str, str, bool, bool]]]:
-    """Lines around several hits in one file, read in a single pass.
-
-    Hits whose ranges touch share one group, like grep's context blocks.
-    Groups come back in file order; each entry is (line number, timestamp,
-    who, message, is_event, is_hit). Events are dropped unless they are hits.
-    """
+    """Context around several hits in one pass; touching ranges share a group."""
     hits = sorted(set(line_nos))
     if not hits:
         return []

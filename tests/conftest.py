@@ -19,8 +19,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 @pytest.fixture(autouse=True)
 def _isolate_index_cache(monkeypatch, tmp_path_factory):
-    # Tests that spawn the script inherit os.environ, so without this the suite
-    # writes its synthetic index into the developer's real ~/.cache/weelog-rg.
+    # Subprocess tests inherit os.environ; without this the suite writes the real ~/.cache/weelog-rg.
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
 
 

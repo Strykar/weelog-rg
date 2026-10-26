@@ -107,7 +107,6 @@ def test_line_buffer_reassembles_split_chunks(weelog):
     # WeeChat hands a chunk that is not valid UTF-8 to the callback as bytes.
     assert lb.feed(line[:cut]) == []
     assert lb.feed(line[cut:]) == [line[:-1]]
-    # Valid chunks arrive as str and may carry several lines plus a tail.
     assert lb.feed('{"b": 1}\n{"c": 2}\n{"d"') == [b'{"b": 1}', b'{"c": 2}']
     assert lb.flush() == [b'{"d"']
     assert lb.flush() == []
@@ -232,8 +231,7 @@ def test_finish_prints_context_blocks_in_order(weelog, tmp_path):
               for n in (8, 2, 3)]
     weelog._finish(s)
     printed = [c.args[3] for c in weechat.prnt_date_tags.call_args_list]
-    # Block one: hits 2 and 3 merge, line 4 is an event and stays hidden; then
-    # a separator; block two: 7, hit 8, 9; then the summary line.
+    # hits 2 and 3 merge (4 is a hidden event), separator, 7-9, then the summary
     assert printed[:-1] == [
         "alice\tnet/#c line 1",      # context
         "alice\tnet/#c line 2",      # hit

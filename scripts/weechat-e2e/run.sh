@@ -1,14 +1,8 @@
 #!/usr/bin/sh
-# Drive weechat/weelog.py inside weechat-headless and dump the results buffer.
-#
+# Drive a weelog script in weechat-headless and dump its results buffer.
 #   scripts/weechat-e2e/run.sh WORKDIR LOGS_DIR 'CMD1;;CMD2;;...'
-#
-# WEELOG_SCRIPT selects the script to load (default weechat/weelog.py; point it
-# at dist/weelog.py to test the self-contained build).
-# WORKDIR gets a throwaway WeeChat home (logger auto_log off, so nothing is
-# written into LOGS_DIR) and an index cache. Commands starting with "!" are
-# fired without waiting for results. Output lands in WORKDIR/out.txt as
-# "epoch<TAB>prefix<TAB>message" per line under a "### command" heading.
+# WEELOG_SCRIPT: script to load (default weechat/weelog.py). "!CMD" fires without waiting.
+# Output: WORKDIR/out.txt, one "epoch<TAB>prefix<TAB>message" per line under "### CMD".
 set -eu
 work=$1; logs=$2; cmds=$3
 repo=$(cd "$(dirname "$0")/../.." && pwd)

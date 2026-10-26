@@ -1,7 +1,4 @@
-"""Core of weelog-rg: index, query, ripgrep runner and log-line parser.
-
-No UI dependencies, so the same code serves the Textual TUI and the WeeChat script.
-"""
+"""Core of weelog-rg: index, query, parser, ripgrep runner. No UI dependencies."""
 from .index import (
     LogFile,
     WriteRefused,

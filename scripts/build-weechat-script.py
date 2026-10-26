@@ -1,10 +1,6 @@
-"""Inline the weelog_rg package into weechat/weelog.py as one self-contained file.
+"""Join the weelog_rg modules and weechat/weelog.py into one file for weechat.org.
 
-weechat.org takes one file per script, so the split sources are joined here:
-the four core modules in dependency order, then the script body with its
-package imports removed. Writes dist/weelog.py unless a path is given.
-
-    python3 scripts/build-weechat-script.py [OUT]
+    python3 scripts/build-weechat-script.py [OUT]   (default: dist/weelog.py)
 """
 from __future__ import annotations
 
@@ -35,7 +31,6 @@ def _is_import_core(node: ast.stmt) -> bool:
 
 
 def split(src: str, imports: dict[str, set[str]], plain: set[str]) -> str:
-    """Strip imports, docstring and package glue; return the remaining top-level code."""
     tree = ast.parse(src)
     lines = src.splitlines()
     kept: list[tuple[int, int]] = []
@@ -70,7 +65,7 @@ def header(src: str) -> str:
     for line in src.splitlines():
         if not line.startswith("#"):
             break
-        if line.startswith("# This file imports the weelog_rg package"):
+        if line.startswith("# Source form:"):
             break
         out.append(line)
     while out and out[-1] == "#":

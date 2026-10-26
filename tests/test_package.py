@@ -150,8 +150,7 @@ async def _hits(q, logs):
 
 
 async def test_search_ignores_case_unless_asked(synthetic_logs):
-    # The log has "alice" saying "good morning". Capitals anywhere, including a nick
-    # typed as displayed, must not make the search case sensitive.
+    # Capitals in the text or in a nick typed as displayed must not make it case sensitive.
     assert len(await _hits(Query(text="GOOD Morning"), synthetic_logs)) == 1
     assert len(await _hits(Query(text="MORNING", nick="Alice"), synthetic_logs)) == 1
     assert await _hits(Query(text="GOOD Morning", case_sensitive=True), synthetic_logs) == []

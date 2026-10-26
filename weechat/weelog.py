@@ -12,8 +12,8 @@
 # Upstream: https://github.com/strykar/weelog-rg
 # Requires Python 3.8 or newer and ripgrep (rg) on PATH.
 #
-# This file imports the weelog_rg package from the checkout it lives in. The
-# self-contained copy for weechat.org comes from scripts/build-weechat-script.py.
+# Source form: imports weelog_rg from this checkout. scripts/build-weechat-script.py
+# makes the one-file build for weechat.org.
 
 from __future__ import annotations
 
@@ -42,9 +42,7 @@ def _import_core() -> None:
     try:
         import weelog_rg  # noqa: F401
     except ImportError:
-        # Running from a checkout: weechat/weelog.py sits one level below the package.
-        # sys.path is shared with every other Python script in this WeeChat, so only
-        # add the checkout when it really holds the package, and search it last.
+        # In a checkout the package is one level up. sys.path is shared with other scripts: append.
         repo = Path(os.path.realpath(__file__)).parent.parent
         if (repo / "weelog_rg" / "__init__.py").is_file():
             sys.path.append(str(repo))
@@ -159,12 +157,7 @@ def parse_command(args: str) -> Request:
 
 
 class LineBuffer:
-    """Reassemble newline-terminated records from hook_process output chunks.
-
-    WeeChat flushes the child's stdout on byte counts, so a chunk can end
-    mid-line and even mid-character. A chunk that is not valid UTF-8 reaches
-    the callback as bytes rather than str.
-    """
+    """Rejoin hook_process chunks into lines; they split anywhere and come as bytes when not UTF-8."""
 
     def __init__(self) -> None:
         self._buf = b""
@@ -212,8 +205,7 @@ class Search:
 
 
 _state: dict[str, Search | None] = {"search": None}
-# Index entries for the current directory key. Reloading from the cache file on
-# every command cost about 200 ms on a 49k-file tree; the key costs a few stats.
+# Reloading the index from its cache file cost ~200 ms per command on 49k files; the key is a few stats.
 _index: dict[str, tuple[list, dict[str, tuple[str, str]]]] = {}
 
 
@@ -410,7 +402,6 @@ def _print_line(s: Search, path: str, ts: str, who: str, msg: str,
     dim = weechat.color("darkgray")
     reset = weechat.color("reset")
     if not is_hit:
-        # Context lines are dimmed as a whole; the hit keeps its normal colours.
         prefix = f"{dim}{who}"
         body = f"{dim}{net}/{chan} {msg}"
     else:
@@ -459,9 +450,7 @@ def weelog_process_cb(data: str, command: str, rc: int, out: str | bytes, err: s
         s.hook = ""
         for line in s.lines.flush():
             _consume(s, line)
-        # rg exits 1 for "no matches" and 2 for errors. --no-messages silences
-        # unreadable files, so anything left on stderr is about the pattern and
-        # would fail every remaining chunk the same way.
+        # rg exits 2 on error; with --no-messages, stderr can only be a pattern error that hits every chunk.
         if rc >= 2:
             s.rg_errors = True
         if s.truncated or s.next_chunk >= len(s.paths) or (rc >= 2 and s.err):
@@ -470,8 +459,7 @@ def weelog_process_cb(data: str, command: str, rc: int, out: str | bytes, err: s
             _run_chunk(s)
         return weechat.WEECHAT_RC_OK
     if s.truncated and not s.stopping:
-        # Unhooking a process hook from inside its own callback aborted WeeChat in
-        # testing, so rg is stopped from a one-shot timer instead.
+        # Unhooking a process hook from inside its own callback segfaulted WeeChat; use a timer.
         s.stopping = True
         weechat.hook_timer(1, 0, 1, "weelog_stop_cb", "")
     return weechat.WEECHAT_RC_OK
