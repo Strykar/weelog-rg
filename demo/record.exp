@@ -1,0 +1,127 @@
+#!/usr/bin/expect -f
+# Usage: demo/record.exp OUT.cast
+# Records a scripted session against a synthetic logs tree in /tmp/weelog-demo.
+
+set out [lindex $argv 0]
+set repo [file normalize [file dirname [info script]]/..]
+set demo /tmp/weelog-demo
+set logs $demo/.local/share/weechat/logs
+
+exec rm -rf $demo
+exec mkdir -p $logs $demo/.cache $demo/.config $demo/bin
+exec python3 -I $repo/demo/make-logs.py $logs
+set fh [open $demo/bin/weelog-hindsight w]
+puts $fh "#!/bin/sh\nexec $repo/.venv/bin/python $repo/bin/weelog-hindsight \"\$@\""
+close $fh
+exec chmod +x $demo/bin/weelog-hindsight
+set fh [open $demo/.bashrc w]
+puts $fh {unset PROMPT_COMMAND; cd ~; PS1="\[\e[1;32m\]~\[\e[0m\] \$ "}
+close $fh
+
+set env(HOME) $demo
+set env(XDG_CACHE_HOME) $demo/.cache
+set env(XDG_CONFIG_HOME) $demo/.config
+set env(PATH) "$demo/bin:/usr/bin:/bin"
+set env(TERM) xterm-256color
+set env(COLORTERM) truecolor
+set env(PAGER) less
+set env(LESS) -R
+
+set timeout 30
+set send_human {.06 .12 1 .03 .25}
+spawn asciinema rec --overwrite --window-size 140x50 -i 2 \
+    -t "weelog-hindsight demo" -c "bash --noprofile --rcfile $demo/.bashrc -i" $out
+expect "$ "
+
+proc type {s} { send -h -- $s }
+proc key {k {pause 0.35}} { send -- $k; sleep $pause }
+proc wait {s} { sleep $s }
+
+set TAB "\t"
+set STAB "\033\[Z"
+set DOWN "\033\[B"
+set RIGHT "\033\[C"
+set ENTER "\r"
+set ESC "\033"
+set F2 "\033OQ"
+set F3 "\033OR"
+set F4 "\033OS"
+set CTRL_U "\025"
+set CTRL_L "\014"
+set CTRL_E "\005"
+set CTRL_P "\020"
+set CTRL_Q "\021"
+
+wait 1
+type "weelog-hindsight --logs ~/.local/share/weechat/logs"
+wait 0.6
+key $ENTER 4
+
+# Plain text search, then walk the results to update the context pane.
+type "systemd"
+wait 2.5
+key $STAB
+key $STAB 1
+for {set i 0} {$i < 4} {incr i} { key $DOWN 0.9 }
+wait 1.5
+
+# Narrow by nick and date.
+key "/"
+key $TAB
+type "FlashCode nils_2"
+wait 2
+key $TAB
+type "2026-10-01"
+wait 3
+
+# Clear the nick and date, switch to a regex search.
+key $CTRL_U
+key $STAB
+key $CTRL_U
+key $STAB
+key $CTRL_U
+type {logger\.file\.(time_format|color_lines)}
+wait 1
+for {set i 0} {$i < 5} {incr i} { key $TAB 0.15 }
+key " " 2.5
+
+# Pull in the rotated .gz archive from the old freenode network.
+for {set i 0} {$i < 3} {incr i} { key $TAB 0.15 }
+key " " 3
+
+# Scope to one channel from the tree.
+key $CTRL_L 0.8
+key $DOWN 0.5
+key $DOWN 0.6
+key $ENTER 2
+for {set i 0} {$i < 6} {incr i} { key $DOWN 0.3 }
+key $ENTER 3
+
+# Open the hit in $PAGER at the matching line.
+key $TAB 0.8
+key $ENTER 3
+key "q" 1.5
+
+# Hide the filter card and tree for a focused view, then bring them back.
+key $F2 1.2
+key $F4 2.5
+key $F4 0.8
+key $F2 1.5
+
+# Export the results.
+key $CTRL_E 1.5
+key $ENTER 3
+
+# Switch theme from the command palette.
+key $CTRL_P 1
+type "theme"
+wait 1
+key $ENTER 1.2
+type "gruvbox"
+wait 1
+key $ENTER 3
+
+key $CTRL_Q 1
+type "exit"
+key $ENTER
+expect eof
