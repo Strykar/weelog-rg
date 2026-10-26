@@ -122,6 +122,11 @@ def strip_weechat_colors(text: str) -> str:
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
 
 
+def _display_name(name: str) -> str:
+    # File names reach the terminal too.
+    return _CONTROL_RE.sub("", name)
+
+
 def parse_timestamp(ts: str) -> datetime | None:
     # ISO-Z input returns an aware UTC datetime, the classic format a naive one.
     if not ts:
@@ -325,8 +330,8 @@ def build_index(logs_dir: Path) -> list[LogFile]:
                     buffer = rest
                 out.append(LogFile(
                     path=entry.path,
-                    network=network,
-                    buffer=buffer,
+                    network=_display_name(network),
+                    buffer=_display_name(buffer),
                     day=None,
                     compressed=bool(m["comp"]),
                 ))
@@ -349,8 +354,8 @@ def build_index(logs_dir: Path) -> list[LogFile]:
                         continue
                     out.append(LogFile(
                         path=f.path,
-                        network=network,
-                        buffer=m["buf"],
+                        network=_display_name(network),
+                        buffer=_display_name(m["buf"]),
                         day=day,
                         compressed=False,
                     ))
@@ -503,6 +508,7 @@ def humanize_bytes(n: int) -> str:
 
 def _index_key(logs_dir: Path) -> str:
     h = hashlib.sha256()
+    h.update(b"schema:2\n")
     h.update(str(logs_dir.resolve()).encode())
     for entry in sorted(os.scandir(logs_dir), key=lambda e: e.name):
         st = entry.stat(follow_symlinks=False)
@@ -1576,7 +1582,7 @@ class Hindsight(App):
         preview = self.query_one("#preview-content", RichLog)
         preview.clear()
         preview.write(table)
-        rel = os.path.relpath(m.path, self.logs_dir)
+        rel = _display_name(os.path.relpath(m.path, self.logs_dir))
         ev = "" if self.query.hide_events else " (including events)"
         # Buffer names come off disk, so render them as plain text, never markup.
         self.query_one("#preview-title", Static).update(Text(

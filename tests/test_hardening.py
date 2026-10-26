@@ -88,3 +88,33 @@ def test_index_skips_dated_file_with_impossible_date(app_module, tmp_path):
     idx = app_module.build_index(tmp_path)
     assert [e.day for e in idx] == ["2026-01-02"]
     assert len(app_module.select_files(idx, app_module.Query(text="hello"))) == 1
+
+
+_OSC_TITLE = "\x1b]0;PWNED\x1b\\"
+
+
+async def test_buffer_names_are_not_terminal_controls(
+    app_module, tmp_path, tmp_path_factory, monkeypatch, debounce_immediate,
+):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
+    dated = tmp_path / "2026" / f"net{_OSC_TITLE}"
+    dated.mkdir(parents=True)
+    (dated / f"#chan{_OSC_TITLE}.01-02.log").write_text(
+        "2026-01-02 10:00:00\tbob\thello\n", encoding="utf-8",
+    )
+    from textual.widgets import DataTable, Input, Static, Tree
+    idx, stats = app_module.load_or_build_index(tmp_path)
+    app = app_module.Hindsight(tmp_path, idx, theme="dark", index_stats=stats)
+    async with app.run_test(size=(200, 60)) as pilot:
+        await pilot.pause(0.2)
+        net_node = app.query_one("#tree", Tree).root.children[0]
+        shown = [str(net_node.label), str(net_node.children[0].label)]
+        app.query_one("#q-text", Input).value = "hello"
+        await pilot.pause(0.05)
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.4)
+        shown.append(str(app.query_one("#results", DataTable).get_row_at(0)[2]))
+        shown.append(str(app.query_one("#preview-title", Static).render()))
+    for s in shown:
+        assert "\x1b" not in s, repr(s)
+    assert shown[2] == "#chan]0;PWNED\\"
