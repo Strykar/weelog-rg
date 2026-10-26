@@ -19,12 +19,14 @@ by default so you search what people said, not what servers announced.
 
 ## Demo
 
+![weelog-rg: a search session in the TUI](demo/demo.gif)
+
 ![Results for a search: the table lists every hit with network, channel, nick and message](demo/results.svg)
 
 ![The context pane around a selected hit, with the hit marked](demo/context.svg)
 
-Rendered from synthetic logs by `demo/screenshots.py`. [demo/demo.cast](demo/demo.cast)
-is a full asciinema recording of a session: `asciinema play demo/demo.cast`.
+The GIF is [demo/demo.cast](demo/demo.cast), an asciinema recording, rendered with
+`agg` at 1.5x; the stills come from `demo/screenshots.py` on synthetic logs.
 
 ## Install
 
