@@ -879,6 +879,35 @@ class ClipboardConsent(ModalScreen[bool]):
         self.dismiss(False)
 
 
+HELP_SCREEN_TEXT = (
+    "[b]weelog-rg[/b] key bindings\n\n"
+    "[b]/[/b]          focus search bar\n"
+    "[b]Ctrl+L[/b]    focus tree\n"
+    "[b]Ctrl+P[/b]    palette: themes and actions\n"
+    "[b]F2[/b]        toggle filter bar\n"
+    "[b]F3[/b]        toggle context pane\n"
+    "[b]F4[/b]        toggle tree pane\n"
+    "[b]Enter[/b]     open match in $PAGER at its line\n"
+    "[b]y[/b]          copy current row (asks once per session)\n"
+    "[b]Y[/b]          copy focused pane: tree, results or context\n"
+    "[b]Ctrl+E[/b]    export results to /tmp as TSV\n"
+    "[b]?[/b]          this help\n"
+    "[b]Ctrl+Q[/b]    quit (Ctrl+C does not)\n\n"
+    "[b]Chips[/b]\n"
+    "  [b]regex[/b]        search text is a regular expression\n"
+    "  [b]case[/b]         case-sensitive; off means smart case\n"
+    "  [b]events[/b]       show join / part / quit / topic lines\n"
+    "  [b]archives[/b]     include rotated .gz / .zst logs\n"
+    "  [b]system[/b]       include ZNC, soju and services buffers and\n"
+    "                WeeChat's core and monitor buffers\n"
+    "  [b]compact[/b]      time / where / message columns only\n"
+    "  [b]context[/b]      show or hide the context pane\n"
+    "  [b]hits only[/b]    tree shows only buffers with matches\n\n"
+    "Results stop at 500 hits; narrow by nick, date or buffer.\n"
+    "[dim]Press ? or Esc to close.[/dim]"
+)
+
+
 class HelpScreen(ModalScreen):
     CSS = """
     HelpScreen { align: center middle; }
@@ -893,33 +922,7 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
-            yield Static(Text.from_markup(
-                "[b]weelog-rg[/b] key bindings\n\n"
-                "[b]/[/b]          focus search bar\n"
-                "[b]Ctrl+L[/b]    focus tree\n"
-                "[b]F2[/b]        toggle filter bar\n"
-                "[b]F3[/b]        toggle context pane\n"
-                "[b]F4[/b]        toggle tree pane\n"
-                "[b]Enter[/b]     open match in $PAGER at line\n"
-                "[b]y[/b]          yank current row (needs clip chip)\n"
-                "[b]Y[/b]          yank focused pane (tree/results/context)\n"
-                "[b]Ctrl+E[/b]    export results to /tmp as TSV\n"
-                "[b]Ctrl+P[/b]    palette: themes, actions, tree jumps\n"
-                "[b]?[/b]          this help\n"
-                "[b]Ctrl+Q[/b]    quit\n\n"
-                "[b]Scope chips[/b] (what gets searched)\n"
-                "  [b]archives[/b]     include rotated .gz / .zst logs\n"
-                "  [b]meta[/b]         include core, chanmon, highmon\n"
-                "  [b]events[/b]       show join / part / topic lines\n"
-                "  [b]znc[/b]          include *status, *controlpanel\n"
-                "  [b]soju[/b]         include BouncerServ control buffer\n"
-                "  [b]services[/b]     include ChanServ, NickServ, ...\n\n"
-                "[b]Display chips[/b] (what gets shown)\n"
-                "  [b]date/ago/chan/who[/b]  toggle result columns\n"
-                "  [b]context[/b]      show/hide context pane\n"
-                "  [b]clip[/b]         enable clipboard writes (y/Y)\n\n"
-                "[dim]Press ? or Esc to close.[/dim]"
-            ))
+            yield Static(Text.from_markup(HELP_SCREEN_TEXT))
 
     def action_dismiss(self) -> None:
         self.app.pop_screen()
@@ -1796,21 +1799,18 @@ def _parse_date(s: str) -> date | None:
 
 HELP_EPILOG = """\
 Filters:
-  Query         text or regex
-  regex/case    smart-case off, regex mode
-  hide events   drop join/part/topic/mode lines
-  archives      also search rotated, compressed log files (.gz, .zst)
-  meta          include weechat's own aggregator buffers (core.chanmon
-                etc.). Off by default because they duplicate real lines
-  Nick          one or more nicks (anchored; no body mentions)
-  From / To     YYYY-MM-DD inclusive
-  Columns       toggle date/ago/channel/nick columns
-  clipboard     enables y; clipboard is not read until checked
-  context       show or hide the Context pane at the bottom
+  Search          text, or a regular expression with the regex chip
+  Nick(s)         one or more nicks, space or comma separated. Matches the
+                  nick column only; fuzzy, so every typed character must
+                  appear in order
+  From / To       YYYY-MM-DD, inclusive
+  context length  lines shown above and below a match (default 100)
+  Chips: regex, case, events, archives, system, compact, context, hits only
 
 Keys:
-  Ctrl+P palette · / Query · Ctrl+L tree · F2 toggle filters
-  Enter open in $PAGER · y yank row · Y yank ctx · Ctrl+E export · Ctrl+Q quit
+  Ctrl+P palette · / search · Ctrl+L tree · F2 filters · F3 context · F4 tree
+  Enter open in $PAGER · y copy row · Y copy pane · Ctrl+E export · ? help
+  Ctrl+Q quit (Ctrl+C does not)
   Tab / arrows / Space / PgUp/PgDn work everywhere
 
 Logs directory:
@@ -1819,10 +1819,10 @@ Logs directory:
   If neither is set, the tool exits with a hint.
 
 Theme:  --theme auto|dark|light|<textual-theme-name>
-URLs are linkified (OSC 8) except where the terminal already does it
-(Kitty, WezTerm, iTerm2, Ghostty, foot, VTE).
+Results stop at 500 hits. URLs are linkified (OSC 8) except where the
+terminal already does it (Kitty, WezTerm, iTerm2, Ghostty, foot, VTE).
 
-A search needs at least a Query or a Nick. Other knobs narrow, they
+A search needs at least a Search text or a Nick. Other knobs narrow, they
 don't drive.
 """
 
@@ -1852,7 +1852,7 @@ def main() -> None:
     ap.add_argument(
         "--theme", default="auto",
         help=(
-            "'auto' (default, honours COLORFGBG), 'dark', 'light', or any "
+            "'auto' (default, currently the same as 'dark'), 'dark', 'light', or any "
             "Textual theme name (e.g. 'gruvbox', 'nord', 'catppuccin-mocha')."
         ),
     )

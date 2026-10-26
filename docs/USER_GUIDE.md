@@ -3,21 +3,21 @@
 ## The screen
 
 ```
-┌─ filters ─────────────────────────────────────────────────────────┐
-│  Query  [_______]   regex  case  hide events  archives            │
-│  Nick   [_______]   From [____]  To [____]                        │
-│  Columns  date  ago  channel  nick   |  clipboard  context        │
-├─ tree ───────────┬─ results ──────────────────────────────────────┤
-│  networks        │  when   ago   where      nick    message       │
-│  ▾ example-net   │  ...                                           │
-│    #channel-one  │                                                │
-│  core            │                                                │
-│                  │                                                │
-├──────────────────┴─ context (±40 lines around selected result) ───┤
-│  >> 10:00:30  alice  good morning                                 │
-│     10:01:00  bob    morning, https://example.org/path?q=1        │
-└───────────────────────────────────────────────────────────────────┘
+┌─ filters ──────────────────────────────────────────────────────────┐
+│ Search [_______] Nick(s) [_____] From [____] To [____] context [__] │
+│ regex  case  events  archives  system   show  compact context hits only │
+├─ tree ───────────┬─ results ───────────────────────────────────────┤
+│ networks         │ when   ago   where        who     message       │
+│ ▾ example-net    │ ...                                             │
+│   #channel-one   │                                                 │
+│                  │                                                 │
+├──────────────────┴─ context (100 lines each side of the match) ────┤
+│ >> 10:00:30  alice  good morning                                   │
+│    10:01:00  bob    morning, https://example.org/path?q=1          │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+`F2` hides the filter card, `F4` the tree, `F3` the context pane. On a terminal under 100 columns the context pane starts hidden; under 70 the tree does too.
 
 ## What each chip does
 
@@ -27,58 +27,57 @@ The filter card has two rows. The top row is for inputs you type into. The botto
 
 | Field | What you put there |
 | --- | --- |
-| Search | The phrase you're looking for in messages. |
-| Nick(s) | One or more nicks, separated by spaces or commas. Matches any of them. |
-| From / To | A date range. Format is `YYYY-MM-DD`. |
-| Context length | How many lines to show above and below each match in the Context pane. Defaults to 100. |
+| Search | The phrase you're looking for in messages. A regular expression if the `regex` chip is on. |
+| Nick(s) | One or more nicks, separated by spaces or commas. Matches any of them. See [The Nick field](#the-nick-field). |
+| From / To | A date range. Format is `YYYY-MM-DD`, inclusive. |
+| context length | How many lines to show above and below a match in the context pane. Defaults to 100. |
 
 **Chips (bottom row)**
 
 Most chips are off by default. Tick them to opt in.
 
-- **regex**: treat your Search as a regex. Off means plain text.
+- **regex**: treat your Search as a regular expression. Off means plain text.
 - **case**: case-sensitive. Off uses smart case (lowercase input matches anything).
-- **events**: show join/part/quit/topic/mode lines. Off keeps your results focused on real conversation.
-- **archives**: also search rotated, compressed logs. Both `.gz` and `.zst` (the two compression types WeeChat's logger supports). Slower than searching live files; turn on when you want history.
-- **meta**: include WeeChat's monitor buffers (`chanmon`, `highmon`, `newsmon`) and `core.weechat`. These mirror messages from real channels, so leaving this off avoids double-counting.
-- **znc**: include your ZNC bouncer buffers (`*status`, `*controlpanel`, etc.).
-- **soju**: placeholder; soju buffers aren't classified yet (open a PR with sample logs).
-- **services**: include automated network services (ChanServ, NickServ, MemoServ, OperServ, etc.).
-- **date / ago / chan / nick**: show or hide the corresponding column in the results pane. The message column is always shown.
-- **context**: show or hide the Context pane.
-- **clipboard**: your clipboard is not read until you tick this. Once on, `y` and `Y` work.
+- **events**: show join/part/quit/topic/mode lines. Off keeps the results to real conversation.
+- **archives**: also search rotated, compressed logs, both `.gz` and `.zst`. Slower than live files; turn on when you want history.
+- **system**: include the buffers that are not conversation: your ZNC bouncer's `*status` and `*controlpanel`, soju's `BouncerServ`, services such as ChanServ and NickServ, and WeeChat's own `core.weechat`, `chanmon`, `highmon` and `newsmon` buffers. The monitor buffers mirror lines from real channels, so leaving this off avoids double counting. Channels, private messages and server buffers are always searched.
+- **compact**: show only time, where and message columns. Off shows when, ago, where, who and message.
+- **context**: show or hide the context pane. Same as `F3`.
+- **hits only**: once a search has results, the tree shows only the buffers that matched.
 
 ## Key bindings
 
 | Key                | Action |
 | ------------------ | ------ |
-| `/`                | focus the Query field |
-| `Ctrl+L`           | focus the Networks / Buffers tree |
-| `Ctrl+P`           | command palette (themes, actions, commands) |
-| `Enter` (on a result) | open the day-file in `$PAGER` at the matched line |
-| `y`                | yank the current row to the clipboard |
-| `Y` (Shift+y)      | yank the entire context window to the clipboard as plain text (no colour codes, one line per row). Useful when a terminal mouse-drag would pick up whitespace from neighbouring panes. |
+| `/`                | focus the Search field |
+| `Ctrl+L`           | focus the networks / buffers tree |
+| `Ctrl+P`           | command palette: themes and the actions below |
+| `F2`               | toggle the filter card |
+| `F3`               | toggle the context pane |
+| `F4`               | toggle the tree |
+| `Enter` (on a result) | open the file in `$PAGER` at the matched line |
+| `y`                | copy the current row to the clipboard |
+| `Y` (Shift+y)      | copy the focused pane as plain text: the tree, every result row, or the context window (one line per row, no colour codes) |
 | `Ctrl+E`           | export current results to `/tmp` (confirm first) |
-| `Ctrl+Q`           | quit |
+| `?`                | show the key bindings inside the app |
+| `Ctrl+Q`           | quit. `Ctrl+C` does not quit; it only reminds you of `Ctrl+Q`. |
 | `Tab` / `Shift+Tab` | cycle focus across filters / tree / results |
 | `↑ ↓ ← →`          | move within the focused widget |
-| `Space`            | toggle the focused checkbox |
+| `Space`            | toggle the focused chip |
 | `PgUp` / `PgDn`    | page through the results table |
 
 ## Minimum input for a search to run
 
-weelog-rg will not scan logs on every keystroke. A search is only dispatched when you have given it at least one of:
+A search is only dispatched when you have given it at least one of:
 
-- **Query text** (any body substring or regex), or
-- **a Nick** (anchored, matches that nick's own lines).
+- **Search text** (a substring or regex), or
+- **a Nick** (matches that nick's own lines).
 
-Other filters (network tree selection, date range, `archives`, `hide events`, and the column toggles) narrow or shape the results **after** a Query or Nick is set. On their own they never trigger a search, so opening the app and clicking through the network tree without typing anything will leave the Results pane empty by design.
-
-Typical minima that produce meaningful output:
+Other filters (tree selection, date range, chips) narrow or shape the results **after** a Search or Nick is set. On their own they never trigger a search, so opening the app and clicking through the tree without typing anything leaves the results pane empty by design.
 
 | Goal                               | Minimum you must set         |
 | ---------------------------------- | ---------------------------- |
-| Find a phrase anywhere             | Query                        |
+| Find a phrase anywhere             | Search                       |
 | Read one nick's messages           | Nick                         |
 | Transcript between two nicks       | Nick `alice bob`             |
 | Constrain any of the above by time | add From / To                |
@@ -93,12 +92,12 @@ tree   click the channel under its network
 Nick   alice bob
 ```
 
-Results read top-to-bottom as a transcript.
+Results read top to bottom as a transcript.
 
 **Find a command you ran weeks ago**
 
 ```
-Query  pacman -Syu
+Search pacman -Syu
 From   2025-10-01    To  2025-11-15
 ```
 
@@ -108,65 +107,73 @@ From   2025-10-01    To  2025-11-15
 Nick   someone
 ```
 
-Empty Query is fine; the nick alone drives the search.
+Empty Search is fine; the nick alone drives the search.
 
-## The Context pane
+## The Nick field
 
-When you click or cursor onto a result row, the Context pane shows you what was being said **around** that line. Think of it as opening the log file at the matched line and scrolling 40 lines up and 40 lines down. You see the conversation the match is part of, with the matched line marked `>>` and coloured.
+Accepts any number of nicks, separated by spaces or commas. Whitespace is trimmed and empty entries are ignored.
 
-Long messages wrap within the message column; timestamps and nicks stay aligned.
+Matching is anchored to the nick column, so `alice` never matches a message that merely mentions alice. Within that column it is fuzzy: every character you type must appear in the nick, in order, with anything in between. `alice` matches `alice` and also `alice_away` or `malice`; `ab` matches `abe` and `arbiter`. Type more of the nick to tighten it.
 
-The header of the pane reads something like:
+**Multiple nicks combine with OR, not AND.** `alice bob` returns lines written by alice *or* bob. Read chronologically that is a transcript of whichever of them was talking. There is no intersection mode.
+
+| Input              | Matches                                             |
+| ------------------ | --------------------------------------------------- |
+| (empty)            | no nick filter; the Search drives the query alone   |
+| `alice`            | lines whose nick contains a, l, i, c, e in that order |
+| `alice bob`        | lines by a nick matching alice OR one matching bob  |
+| `alice, bob, eve`  | same with three nicks                               |
+| `  alice   bob  `  | same as `alice bob` (whitespace ignored)            |
+
+Case follows the **case** chip: off (default) is smart case, on is exact.
+
+If you log with a nick prefix or suffix (`logger.file.nick_prefix` / `nick_suffix`, for example `<alice>`), the tool reads them from your `logger.conf` so the Nick field still matches and the display shows the bare nick.
+
+## The context pane
+
+Moving onto a result shows what was said around that line: the matched line marked `>>`, with up to **context length** lines (default 100) above and below it. Long messages wrap within the message column; timestamps and nicks stay aligned.
+
+The pane's header reads like:
 
 ```
 Context: grep --context=100 --line-number --extended-regexp '…' 2026/<net>/<channel>.04-14.log  →  line 1234
 ```
 
-That header is a plain-English description of what you are looking at, written in the familiar `grep` idiom:
+It is a description in the familiar `grep` idiom, not a command to run: the number is the context length, `'…'` stands in for your Search, and the path and line are where the match came from. The real search engine is [ripgrep](https://github.com/BurntSushi/ripgrep); the pane itself reads the file directly, including `.gz` and `.zst` archives.
 
-- `--context=100`: show 100 lines before and 100 lines after the match
-- `--line-number`: lines are numbered in the source file
-- `--extended-regexp`: the search pattern is an extended regex
-- `'…'`: stands in for your actual Query (elided to keep the header short)
-- the file path and `→ line 1234` point at the file and line the match came from
+## Copying to the clipboard
 
-The header is a label, not a command to run. The real search engine is [ripgrep](https://github.com/BurntSushi/ripgrep); the pane's contents come from reading the file directly (including `.gz` and `.zst` archives).
+The first `y` or `Y` of a session asks whether to enable clipboard writes. Say no and both keys do nothing until you restart. The tool never reads your clipboard.
+
+Copies travel through the terminal (OSC 52), so the terminal has to support it; Kitty, WezTerm, foot, iTerm2 and Alacritty do. Under tmux the `set-clipboard` option must allow it. Payloads over about 70 KB are flagged because many terminals truncate them.
+
+## Exporting results
+
+`Ctrl+E` shows the destination and asks for confirmation, then writes the current results (at most 500 rows, see below) to `/tmp/weelog-rg-<timestamp>-<random>.tsv`. The file is created with mode 0600 and never replaces an existing file.
+
+Columns are `timestamp`, `buffer`, `nick`, `message` and `source` (`file:line` relative to the logs directory), tab separated, with a `#` header line. Fields containing tabs, newlines or quotes are quoted the way a spreadsheet export is. A cell that starts with `=`, `+`, `-` or `@` gets a leading apostrophe so a spreadsheet will not run it as a formula; strip it if you process the file with other tools.
+
+## Limits
+
+- **500 hits.** The results pane stops at 500 and the title shows `500+ (truncated)`. Those are the first 500 ripgrep found, in file order (roughly newest year first for dated logs), not the 500 most recent. Narrow by nick, date or buffer.
+- **Rotated logs can overlap.** With `archives` on, a rotated file and the live file can both hold lines from around the rotation point, so the same line may appear twice.
+- **Non-conversation buffers** are off until you tick `system`, even if you select one in the tree.
 
 ## Visual cues
 
 - **Nick colour** is stable across sessions (same nick, same colour).
-- **Event lines** (join/part/topic/mode) render dim; they don't show at all when `hide events` is on.
-- **Private messages** use a direction arrow in the channel column: `← nick` incoming, `→ nick` outgoing. The arrow points at the author.
-- **URLs** are linkified via OSC 8 except where the terminal already auto-linkifies (Kitty, WezTerm, iTerm2, Ghostty, foot, VTE).
-
-## The Nick field
-
-Accepts any number of nicks, separated by spaces or commas. Leading and trailing whitespace is trimmed; empty entries are ignored. The field is anchored between tab characters in the underlying search, so `alice` matches only alice's own lines, not messages that mention alice.
-
-**How multiple nicks combine: OR, not AND.** Listing `alice bob` returns lines written by alice *or* bob, never a single line jointly written by both (that's not a thing in IRC). Viewed chronologically, the results read as a transcript of whichever of the listed nicks was talking. There is no intersection mode.
-
-Semantics at a glance:
-
-| Input              | Matches                                             |
-| ------------------ | --------------------------------------------------- |
-| (empty)            | no nick filter; the Query drives the search alone   |
-| `alice`            | lines where alice is the author                     |
-| `alice bob`        | lines by alice OR bob                               |
-| `alice, bob, eve`  | lines by alice OR bob OR eve                        |
-| `  alice   bob  `  | same as `alice bob` (whitespace ignored)            |
-
-Case handling follows the **case** checkbox: off (default) is smart-case (lowercase input matches any case), on is exact.
-
-Limits: no hard cap on nick count. A huge list eventually runs into ripgrep's regex length, but for any realistic set (dozens of nicks) this is nowhere near reachable. The anchored regex keeps scanning linear in log size regardless of the nick list size.
+- **Event lines** (join/part/topic/mode) render dim and only show when `events` is on.
+- **Private messages** use a direction arrow in the where column: `← nick` incoming, `→ nick` outgoing. The arrow points at the author.
+- **URLs** are linkified via OSC 8 except where the terminal already does it (Kitty, WezTerm, iTerm2, Ghostty, foot, VTE).
 
 ## Themes
 
 ```sh
-weelog-rg --logs DIR --theme auto     # default; reads $COLORFGBG
+weelog-rg --logs DIR --theme auto     # default; currently the same as dark
 weelog-rg --logs DIR --theme dark
 weelog-rg --logs DIR --theme light
 weelog-rg --logs DIR --theme gruvbox
 weelog-rg --logs DIR --theme catppuccin-mocha
 ```
 
-Any Textual-supported theme name works; `Ctrl+P` lets you switch live.
+Any Textual theme name works; `Ctrl+P` lets you switch live.

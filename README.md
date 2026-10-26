@@ -23,13 +23,13 @@ The shebang handles the Python environment. That's it.
 ```sh
 git clone https://github.com/strykar/weelog-rg
 cd weelog-rg
-python -m venv .venv && .venv/bin/pip install 'textual>=0.80' 'rich>=13'
+python -m venv .venv && .venv/bin/pip install 'textual==8.2.3' 'rich==15.0.0'
 .venv/bin/python bin/weelog-rg --logs ~/.local/share/weechat/logs
 ```
 
 You'll also need [ripgrep](https://github.com/BurntSushi/ripgrep) on `$PATH`
-(`pacman -S ripgrep`, `apt install ripgrep`, `brew install ripgrep`).
-The PEP 723 shebang requires `uv >= 0.4`.
+(`pacman -S ripgrep`, `apt install ripgrep`, `brew install ripgrep`), and `zstd`
+if any of your rotated logs are `.zst`. The PEP 723 shebang requires `uv >= 0.4`.
 
 ## Usage
 
@@ -44,7 +44,10 @@ weelog-rg
 ```
 
 `--logs` takes priority over `$WEELOG_DIR`. If neither is set, the tool
-exits with a readable error and a hint.
+exits with a readable error and a hint. Older WeeChat setups keep logs under
+`~/.weechat/logs` instead of the XDG path above.
+
+Press `?` inside the app for every key. `Ctrl+Q` quits; `Ctrl+C` does not.
 
 See **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)** for the filter knobs, key bindings, and typical workflows.
 
@@ -59,7 +62,12 @@ Follows the XDG Base Directory spec:
 
 No config file yet.
 
-The script is gated such that it can never alter or write to the user-supplied `--logs` directory, only XDG cache.
+What the tool touches, since these are your private logs:
+
+- **Reads** the logs directory, and `logger.conf` from your WeeChat config dir to learn the nick prefix and suffix you log with.
+- **Writes** only the index cache above and, on `Ctrl+E` after you confirm, an export file in `/tmp` created with mode 0600. A write gate aborts anything else, including anything inside the logs directory.
+- **Clipboard**: `y` and `Y` write to it through the terminal (OSC 52), only after you say yes once per session. It never reads the clipboard.
+- **Runs** `rg`, `zstdcat` or `zcat` for compressed files, and your `$PAGER` on `Enter`.
 
 ## Roadmap
 
