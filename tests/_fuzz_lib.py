@@ -1,10 +1,3 @@
-"""Shared fuzz harness for weelog-hindsight.
-
-Used by both `tests/test_fuzz.py` (pytest wrapper, runs against the
-synthetic fixture) and `scripts/fuzz.py` (standalone runner, can target
-real logs). Keeping the invariants and action dispatchers here means
-the two harnesses can't drift into vacuous-green-light territory.
-"""
 from __future__ import annotations
 
 import random
@@ -17,8 +10,7 @@ RAND_QUERIES = [
     "a\tb", "\\d+", "(unterminated", "αβγ", "😀", "a" * 80,
 ]
 RAND_NICKS = ["", "alice", "alice bob", "alice,bob", "UPPER", "__", "x y z", "a" * 100]
-# "2026-13-40" is intentional input-validator stress (out-of-range
-# month + day), not a typo.
+# "2026-13-40" is deliberate validator stress, not a typo.
 RAND_DATES = [
     "", "2026-01-01", "2024-05-01", "1970-01-01",
     "not-a-date", "2026-13-40", "2030-01-01",
@@ -36,7 +28,6 @@ class Violation:
 
 
 def _subseq(needle: str, hay: str) -> bool:
-    """fzf-style subsequence: every char of `needle`, in order, in `hay`."""
     h = hay.casefold()
     pos = 0
     for c in needle.casefold():
@@ -48,9 +39,6 @@ def _subseq(needle: str, hay: str) -> bool:
 
 
 def patch_debounce_to_immediate(app_module):
-    """Bypass the 300 ms debounce timer entirely: call the search worker
-    directly so `wait_for_complete` is all that's needed to drain it.
-    Returns the original method so callers can restore it on teardown."""
     original = app_module.Hindsight._schedule_search
 
     def _immediate(self) -> None:
@@ -68,14 +56,12 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
     vs: list[Violation] = []
     dt = app.query_one("#results", DataTable)
 
-    # Row/list length agreement.
     if dt.row_count != len(app._matches):
         vs.append(Violation(
             last_action, "rows-match-len",
             f"table {dt.row_count} vs _matches {len(app._matches)}",
         ))
 
-    # Column count: compact has 3, full has 5.
     expected = 3 if app._compact else 5
     if len(dt.columns) != expected:
         vs.append(Violation(
@@ -83,7 +69,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
             f"table {len(dt.columns)} vs expected {expected}",
         ))
 
-    # Preview reset when nothing selectable.
     def _plain(sel: str) -> str:
         r = app.query_one(sel, Static).render()
         return r.plain if hasattr(r, "plain") else str(r)
@@ -94,7 +79,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
         if "(no selection)" not in _plain("#preview-content"):
             vs.append(Violation(last_action, "preview-reset", "stale body"))
 
-    # hide_events honoured.
     if app.query.hide_events:
         bad = [m for m in app._matches if m.is_event]
         if bad:
@@ -102,9 +86,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
                 last_action, "hide-events", f"{len(bad)} leaked",
             ))
 
-    # Nick filter is fzf-style subsequence: every result's `who` must
-    # be a supermatch of at least one input nick. Exact-match would
-    # pass vacuously on any non-literal input (e.g. "alb" → "alice_bot").
     nicks = [n for n in re.split(r"[,\s]+", app.query.nick.strip()) if n]
     if nicks and app._matches:
         bad = [
@@ -117,8 +98,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
                 f"{len(bad)} outside {nicks} (example {bad[0].who!r})",
             ))
 
-    # Date bounds. Use the script's own parser so ISO-Z lines are
-    # actually checked, not silently skipped past.
     if app.query.date_from or app.query.date_to:
         bad = []
         for m in app._matches:
@@ -136,7 +115,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
                 f"[{app.query.date_from}, {app.query.date_to}]",
             ))
 
-    # Scope filters.
     if app.query.networks and app._matches:
         by_path = {lf.path: lf for lf in app.index}
         bad = [m for m in app._matches
@@ -157,7 +135,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
                 last_action, "buffer-scope", f"{len(bad)} leaked",
             ))
 
-    # Compressed opt-in.
     if not app.query.include_compressed and app._matches:
         bad = [m for m in app._matches
                if m.path.endswith(".gz") or m.path.endswith(".zst")]
@@ -167,9 +144,6 @@ async def check_invariants(app, app_module, last_action: str) -> list[Violation]
                 f"{len(bad)} compressed paths with include_compressed=False",
             ))
 
-    # System-buffer opt-in. select_files gates meta (network starts
-    # with "(") and znc/soju/service kinds. Server buffers are always
-    # shown regardless of include_system, so don't flag those.
     if not app.query.include_system and app._matches:
         _gated_kinds = {"znc", "soju", "service"}
         by_path = {lf.path: lf for lf in app.index}
@@ -195,7 +169,6 @@ async def do_set_input(pilot, selector: str, value: str) -> str:
     from textual.widgets import Input
     inp = pilot.app.query_one(selector, Input)
     inp.value = value
-    # Debounce is patched to fire immediately; just give the loop a tick.
     await pilot.pause(0.01)
     return f"set {selector}={value!r}"
 
@@ -246,7 +219,6 @@ ACTIONS = [
     ("col-compact", "toggle"),
     ("col-context", "toggle"),
     ("tree", "tree"),
-    # Key actions exercised by both harnesses.
     ("f2", "key"),
     ("f3", "key"),
     ("f4", "key"),
@@ -257,7 +229,6 @@ ACTIONS = [
 
 
 async def step(pilot, sel: str, kind: str) -> str:
-    """Run one fuzz action by (selector, kind) and return a label."""
     if kind == "input":
         val = random.choice(RAND_QUERIES if "text" in sel else RAND_NICKS)
         return await do_set_input(pilot, f"#{sel}", val)

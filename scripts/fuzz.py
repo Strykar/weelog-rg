@@ -3,21 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = ["textual>=0.80", "rich>=13"]
 # ///
-"""Standalone fuzz harness for weelog-hindsight.
-
-Drives the TUI headlessly via Textual's Pilot API with random knob
-permutations, and checks state-sync invariants after each action.
-Reports any invariant failure or uncaught exception.
-
-This is the same harness that `tests/test_fuzz.py` wraps for pytest,
-but exposed as a standalone tool so you can run it with custom seeds
-and iteration counts against real logs (not just the synthetic fixture):
-
-    scripts/fuzz.py --logs ~/.local/share/weechat/logs -n 500 --seed 42
-
-Not a correctness prover - a bug-finder. Exit 0 if no invariant
-violations were recorded in N iterations.
-"""
 from __future__ import annotations
 
 import argparse
@@ -29,8 +14,6 @@ import traceback
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-# Lift shared invariants and dispatchers from tests/_fuzz_lib.py so the
-# pytest wrapper and this standalone runner can't drift.
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "tests"))
 import _fuzz_lib  # noqa: E402
@@ -50,7 +33,6 @@ async def run(logs_dir: Path, iterations: int, seed: int) -> int:
     random.seed(seed)
     target = SCRIPT_DIR.parent / "bin" / "weelog-hindsight"
     if not target.exists():
-        # Fall back to $PATH for ad-hoc runs against an installed copy.
         import shutil
         found = shutil.which("weelog-hindsight")
         if not found:

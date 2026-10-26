@@ -1,6 +1,3 @@
-"""500-match cap: when a search yields more rows than the cap, the
-title must surface the truncation marker so users know to narrow.
-A silent cap looks indistinguishable from "search complete"."""
 from __future__ import annotations
 
 from pathlib import Path

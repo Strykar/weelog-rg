@@ -1,5 +1,3 @@
-"""Onboarding: the idle state should show index stats and key hints
-in the preview pane, not in the 1-line results title."""
 from __future__ import annotations
 
 
@@ -14,22 +12,17 @@ async def test_onboarding_renders_in_preview(
                                index_stats=stats)
     async with app.run_test(size=(200, 60)) as pilot:
         await pilot.pause(0.3)
-        # Preview title should show the logs directory path (not "Welcome").
         preview_title = app.query_one("#preview-title", Static)
         pt = preview_title.render()
         pt_text = pt.plain if hasattr(pt, "plain") else str(pt)
         assert "Welcome" not in pt_text
         assert "/" in pt_text, f"expected a path, got: {pt_text!r}"
 
-        # Preview content should contain stats from the index.
         preview = app.query_one("#preview-content", RichLog)
-        # RichLog stores lines internally; check the raw text.
         body_text = "\n".join(str(line) for line in preview.lines)
         assert "log files" in body_text
         assert "Index" in body_text and "ms" in body_text
 
-        # Results title should still be the short "Results" label,
-        # not the multi-line onboarding that used to overflow it.
         results_title = app.query_one("#results-title", Static)
         rt = results_title.render()
         rt_text = rt.plain if hasattr(rt, "plain") else str(rt)

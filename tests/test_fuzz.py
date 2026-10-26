@@ -1,13 +1,3 @@
-"""Headless Textual fuzz harness (pytest wrapper).
-
-Drives the TUI via Textual's Pilot API with random knob permutations
-and checks state-sync invariants after each action. Caught the
-stale-preview and mid-stream-row-list-mismatch bugs during development.
-
-Invariants and action dispatchers live in `_fuzz_lib.py` so the
-standalone `scripts/fuzz.py` harness can't drift away from this one.
-Marked slow (~20-60 s per seed); skip with `pytest -m "not slow"`.
-"""
 from __future__ import annotations
 
 import random
@@ -15,7 +5,7 @@ import traceback
 
 import pytest
 
-import _fuzz_lib  # added to sys.path by conftest.py
+import _fuzz_lib
 
 
 N_ITERATIONS = 50

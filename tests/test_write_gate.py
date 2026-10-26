@@ -1,6 +1,3 @@
-"""assert_writable: the single chokepoint that keeps the read-only-
-to-logs invariant honest. One parametrised function covers every
-allow/refuse path, plus a dedicated --logs overlap test."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +5,6 @@ from pathlib import Path
 import pytest
 
 
-# (label, factory_fn, should_succeed, error_substring_if_fail)
 def _allowed_cache(_app, tmp_path, _logs):
     target = tmp_path / "weelog-hindsight" / "index.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -27,8 +23,6 @@ def _refused_export_wrong_suffix(_app, _tmp, _logs):
     return Path("/tmp/weelog-hindsight-x.exe")
 
 def _refused_outside_via_traversal(_app, _tmp, _logs):
-    # resolve() normalises away the ..; this is really an allowlist
-    # check, not a traversal-specific defence.
     return Path("/tmp/../etc/weelog-hindsight-x.tsv")
 
 def _refused_symlink_to_logs(_app, tmp_path, _logs):
@@ -37,11 +31,6 @@ def _refused_symlink_to_logs(_app, tmp_path, _logs):
     link = tmp_path / "weelog-hindsight" / "sneaky.json"
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(logs_dir / "index.json")
-    # Temporarily arm the logs-overlap guard. The parametrised test
-    # runner doesn't restore globals, but this case only checks gate
-    # (2) which requires _LOGS_DIR_RESOLVED to be set. The save/restore
-    # happens in the test body via monkeypatch or try/finally on the
-    # dedicated overlap test; here we just arm it for the assertion.
     _app._set_write_policy(logs_dir, tmp_path / "weelog-hindsight", Path("/tmp"))
     return link
 
@@ -64,7 +53,6 @@ CASES = [
 )
 def test_write_gate(app_module, tmp_path, monkeypatch, label, factory, ok, err):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # Some factories call _set_write_policy; save/restore the globals.
     saved_roots = list(app_module._ALLOWED_WRITE_ROOTS)
     saved_logs = app_module._LOGS_DIR_RESOLVED
     try:
@@ -82,13 +70,7 @@ def test_write_gate(app_module, tmp_path, monkeypatch, label, factory, ok, err):
 
 
 def test_write_gate_refuses_export_inside_logs(app_module, tmp_path, monkeypatch):
-    """Gate (2): even if a path is under /tmp (an allowlisted root), it
-    must be refused when --logs also points at /tmp. This exercises the
-    _LOGS_DIR_RESOLVED overlap check which has zero coverage in the
-    parametrised table above."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    # Save and restore the module-level write-policy globals so this
-    # test doesn't poison subsequent tests.
     saved_roots = list(app_module._ALLOWED_WRITE_ROOTS)
     saved_logs = app_module._LOGS_DIR_RESOLVED
     try:
