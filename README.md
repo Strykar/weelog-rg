@@ -1,6 +1,6 @@
 # weelog-rg
 
-Search every kind of WeeChat log with ripgrep: channels, PMs, server buffers, services
+Search WeeChat logs with ripgrep: channels, PMs, server buffers, services
 (ChanServ, NickServ, ...), ZNC bouncer modules, and WeeChat's own monitor and core buffers,
 in both the legacy flat layout (`plugin.name.weechatlog[.N][.gz]`) and the dated
 `YYYY/network/buffer.MM-DD.log` hierarchy. Index years of history once, then search
@@ -19,12 +19,12 @@ by default so you search what people said, not what servers announced.
 
 ## Demo
 
-[demo/demo.cast](demo/demo.cast) is an [asciinema](https://asciinema.org) recording of
-the TUI: search, filters, regex, archives, tree scoping, pager, export, theme.
+![Results for a search: the table lists every hit with network, channel, nick and message](demo/results.svg)
 
-```sh
-asciinema play demo/demo.cast
-```
+![The context pane around a selected hit, with the hit marked](demo/context.svg)
+
+Rendered from synthetic logs by `demo/screenshots.py`. [demo/demo.cast](demo/demo.cast)
+is a full asciinema recording of a session: `asciinema play demo/demo.cast`.
 
 ## Install
 
@@ -144,15 +144,3 @@ cp dist/weelog.py ~/.local/share/weechat/python/
 
 The results buffer is marked `no_log`, so searches are never written back into the
 logs. Typing into it runs `/weelog` again with what you typed.
-
-## Roadmap
-
-See [TODO.md](TODO.md) for what is still open (TUI shim over the package, weechat.org submission, jump to the live buffer).
-
-## Contributing
-
-PRs and issues welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, testing guidelines, and style notes.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
