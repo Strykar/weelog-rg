@@ -2,32 +2,14 @@
 
 High-level roadmap. Issues / PRs welcome.
 
-## Before first push
-
-Items from the internal code review pass. Most are resolved; remaining open
-items are conditional or low-priority.
-
-### Resolved
-
-All script bugs (zstdcat leak, colour guard, shell quoting, timezone,
-export tabs, stderr PIPE, sort key), design items (open_w, 500-cap,
-soju detector, OSC 52 warning, nick cap, BLE001 narrowing), style
-items (humanize_bytes, crc32, regex comment), test correctness (fuzz
-nick/date/debounce, yank cursor, readonly export/assertion), test
-duplication (shared _fuzz_lib), coverage gaps (zst, 500-cap, ISO date,
-24-bit branch), and hygiene (asyncio_mode, Path.name, date negatives,
-RAND_DATES comment) are all landed.
-
-### Still open
+## Performance
 
 - [ ] `_render_rows` rebuilds the whole DataTable on every compact toggle.
   Fine at 500 rows, painful if the cap goes up.
 - [ ] `select_files` re-filters per-file each call. Pre-partition by network
   in `build_index` if scope filters become a hot path.
-- [x] Clipboard writes now use `App.copy_to_clipboard` (Textual's own OSC 52
-  implementation) instead of raw `sys.stdout.write`.
 
-### Known limitations
+## Known limitations
 
 - The 500-match cap returns the first 500 hits in rg's stream order (roughly
   newest-year-first for dated layouts), not chronologically. The title shows
